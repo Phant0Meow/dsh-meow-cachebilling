@@ -1,0 +1,51 @@
+{
+  "name": "meow-cachebilling",
+  "version": "0.1.0",
+  "description": "喵账单：输入框下方一行实时读数——本轮请求的缓存命中/未命中/输出各花多少钱，峰谷自动计价，专治『缓存命中率 100% 却越用越贵』",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "billing",
+    "cache-hit",
+    "cost",
+    "peak-offpeak"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Phant0Meow/dsh-meow-cachebilling.git"
+  },
+  "author": "Phant0Meow",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/index.js.map",
+    "lib/client.js",
+    "lib/client.js.map",
+    "cordis.patch.yml"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "zod": "^4.4.3"
+  }
+}

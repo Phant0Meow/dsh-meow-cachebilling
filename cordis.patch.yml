@@ -1,0 +1,7 @@
+# meow-cachebilling bundle patch: inserts this plugin into a profile's layer stack.
+# Applied when a profile lists this bundle (or wired by dev_install_package).
+- insert:
+    - id: meow-cachebilling
+      name: 'meow-cachebilling'
+      config:
+        enabled: true

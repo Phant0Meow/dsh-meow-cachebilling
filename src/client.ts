@@ -174,7 +174,7 @@ function renderBill(bill: HTMLElement): void {
   const head = doc.createElement('div')
   head.className = 'meowcb_billhead'
   const title = doc.createElement('span')
-  title.textContent = '本轮 API'
+  title.textContent = '当前轮消耗'
   const amount = doc.createElement('span')
   amount.className = 'meowcb_billtotal'
   amount.textContent = `${symbol}${formatAmount(total)}`
@@ -210,14 +210,11 @@ function renderBill(bill: HTMLElement): void {
   )
   put(rows)
 
+  // 底部小字只保留峰/谷价标注——轮次/模型/命中率与网页最下方统计行重复
+  // （2026-08-23 用户反馈砍掉）。
   const foot = doc.createElement('div')
   foot.className = 'meowcb_foot'
-  foot.textContent = [
-    `第 ${view.turn ?? '?'} 轮`,
-    String(view.model ?? '未知模型'),
-    tierText,
-    `命中率 ${hitRateText}`,
-  ].join(' · ')
+  foot.textContent = tierText
   put(foot)
 }
 

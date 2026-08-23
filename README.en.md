@@ -75,13 +75,13 @@ But it really does save money...
 ## Features
 
 - **DeepSeek official API only**: this plugin prices official DeepSeek routes only; on any other LLM API or third-party relay the readout simply doesn't show — better silent than wrong.
-- **Four live figures** (next to the stats bar under the composer): `this round ¥0.0219｜cache 0.0015 · miss 0.0198 · output 0.0006`
+- **The bill lives in the context menu**: click the context ring beside the composer and the round's bill sits at the bottom of its panel — `this round ¥0.0219` plus cache/miss/output lines, right next to "how much context is used"
 - **One round = one model API call**: if the AI calls tools mid-turn and requests again, that's a new round; figures refresh per request and always show the current round only
 - **Automatic peak/off-peak pricing**: weekday peak hours (Beijing time 09:00–12:00 / 14:00–18:00) bill at peak rates; all other hours plus Saturdays and Sundays bill at half-price valley rates — independent of your system timezone, computed purely from event time
 - **Per-model pricing**: V4 Flash and V4 Pro differ; each round is priced by the model that actually served it
-- **No amount truncation**: below ¥0.01 every decimal place is kept — not one digit lost while your session is still young and cheap
+- **Readable amounts**: two decimal places at or above ¥0.01; below that, one significant digit — so even a 0.000012 round never reads as zero
 
-Hover over the readout for details: hit tokens × unit price × peak/valley tag × hit rate × model name.
+A footer line under the bill notes the turn number, model, peak/valley tier, and hit rate.
 
 ## Install
 

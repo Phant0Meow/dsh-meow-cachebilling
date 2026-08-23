@@ -19,7 +19,7 @@ dsh缓存命中率高，ds服务器缓存处理也得当，价格也便宜，导
 但未命中的输入和ai输出，才是硬梆梆不能少的实际使用，是不是？
 所以或许应该用“实际使用”去衡量两天不同的工作量，并比较两天的性价比。
 
-<img width="202" height="130" alt="bdf3b8aafe29f33c510cedfee116ed5d" src="https://github.com/user-attachments/assets/fbe0fc75-5e91-44f3-b871-4ebb8d736767" />
+<img width="404" height="260" alt="bdf3b8aafe29f33c510cedfee116ed5d" src="https://github.com/user-attachments/assets/fbe0fc75-5e91-44f3-b871-4ebb8d736767" />
 
 所以，正确的deepseek使用姿势是：
 不断开新窗口，旧窗口就再也不动了。

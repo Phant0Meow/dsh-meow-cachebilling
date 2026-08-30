@@ -75,7 +75,7 @@ But it really does save money...
 ## Features
 
 - **Third-party relays welcome**: not limited to the official DeepSeek route — official routes price exactly off the rate card; any relay that reports usage gets billed too. Models on the rate card price off the card (peak/valley or flat); unmatched ones estimate at flash rates with an "estimate" tag in the bill. Routes with no provider at all stay hidden.
-- **Hand-editable rate card**: `rates.yml` at the package root — provider/model exactly as the API reports them, peak/valley (days × ranges cross product) or flat `const`, timezone per provider billing zone (IANA name); restart `dsh web` to apply. Broken entries are skipped with a console warning — it can never crash DSH.
+- **Visual rate-card editor**: a dedicated "Meow Cache Billing" tab in the settings page (sibling of General / Models) — add, edit, or restore prefill entries, effective immediately without a restart. `rates.yml` at the package root is the shipped prefill layer (provider/model exactly as the API reports them, peak/valley (days × ranges cross product) or flat `const`, timezone per provider billing zone (IANA name)); editing it needs a `dsh web` restart. Broken entries are skipped with a console warning — it can never crash DSH.
 - **The bill lives in the context menu**: click the context ring beside the composer and the bill sits at the bottom of its panel, right next to "how much context is used"
 - **Three timing tiers**: current API call / current turn (multi-call accumulation) / session total (with call count). Each tier is one header line with total tokens and cost, plus indented cache-hit, cache-miss and output lines with tokens and money
 - **Session total**: the whole session is priced call by call at each call's own peak/valley rate. Two per-call counters, both derived from the usage fields the API returns — "cache invalidations": the call reported cache-write tokens (a write means the prefix changed and the old cache was invalidated; the official API doesn't report this field, only some relays do); "full misses": the call had input but zero cache hit (derived from the reported hit count; a session's first call, with nothing to hit yet, counts too)
@@ -115,7 +115,7 @@ On third-party relays the rate card may differ — matched models estimate at th
 
 - Official DeepSeek routes price exactly; third-party relays estimate, tagged as such when the model isn't on the rate card.
 - Calls without a reusable prefix honestly show a small miss cost — the first call of a fresh session has nothing to reuse yet.
-- The rate card lives in `rates.yml` at the package root — add your own models/APIs and restart `dsh web`. A broken file falls back to the built-in defaults with a console warning.
+- The rate card has two layers: `rates.yml` at the package root is the shipped prefill (follows version updates); the "Meow Cache Billing" settings tab is your layer, effective immediately. A broken `rates.yml` falls back to the built-in defaults with a console warning.
 
 ## Credits
 

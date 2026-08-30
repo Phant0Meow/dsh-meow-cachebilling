@@ -2,9 +2,11 @@
  * meow-cachebilling — 设置页模块（喵缓存账单）。
  *
  * 独立模块：只管设置页的显示与读写，不掺和账单渲染；由 client.ts 引入（一行 applySettings(ctx)，失败仅警告不影响账单）。
- * 契约照官方 cookbook「adding-a-settings-card」：
- *   - host 半身（index.ts）用 installSettingsSection 注册命名空间 meow-cachebilling，base = 包根 rates.yml 预填层
- *   - 浏览器半身挂 settings.plugin.item 卡片（key = 命名空间），经 ctx.settingsScope.bind({namespace}) 读写
+ * 形态：设置页顶级分区（settings.section，与「通用」「模型」「插件」平级的独立标签页）。
+ * 2026-08-30 猫猫拍板「我们需要在设置加个标签页，不是把信息加到别人的标签页里」——由旧形态（settings.plugin.item 卡片，住在官方插件 tab）升级而来。
+ * 契约照官方 settings.section（ui-settings-general / ui-settings-models 同款）：
+ *   - host 半身（index.ts）用 installSettingsSection 注册命名空间 meow-cachebilling，base = 包根 rates.yml 预填层（不变）
+ *   - 浏览器半身挂 settings.section（list slot：id + order + label），整页渲染价目表
  *   - 快照三视图：value(合成) / base(预填) / user(用户覆盖)；scope.set(field, value) 写用户层、scope.unset(field) 清回预填
  *   - 双层语义：key 存在于 user 层即覆盖预填条目；「恢复预填」= unset；自定义条目删除 = unset
  *   - host 端 scope.watch → onChange → 重编译合成层：设置页改价目即时生效，无需重启
@@ -13,7 +15,6 @@
 import * as React from 'react'
 
 const SETTINGS_NS = 'meow-cachebilling'
-const LOCALE_NS = 'meow-cachebilling-settings'
 const CSS_ID = 'meow-cachebilling-settings-css'
 
 const CSS = `
@@ -37,6 +38,9 @@ const CSS = `
 .meowcb_set_muted{color:var(--dsw-alias-label-caption);font-size:12px}
 .meowcb_set_section{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;margin-top:4px}
 .meowcb_set_tier{font-weight:600}
+.meowcb_set_title{font-size:16px;font-weight:600;margin:0}
+.meowcb_set_subtitle{color:var(--dsw-alias-label-caption);font-size:12px;line-height:1.6;margin:0}
+.meowcb_set_page{color:var(--dsw-alias-label-primary);display:flex;flex-direction:column;gap:10px;max-width:760px;padding:4px 0}
 `
 
 // ── 类型与工具 ──────────────────────────────────────────────────────────────
@@ -239,6 +243,7 @@ function Field(props: { label: string; children: React.ReactNode }): any {
 }
 
 function PriceInputs(props: { d: Draft; set: (patch: Partial<Draft>) => void; mode: 'flat' | 'peak' | 'valley' }): any {
+  const { d, set, mode } = props
   const key = (k: keyof Draft): keyof Draft => k
   const hit = mode === 'flat' ? key('flatHit') : mode === 'peak' ? key('peakHit') : key('valleyHit')
   const miss = mode === 'flat' ? key('flatMiss') : mode === 'peak' ? key('peakMiss') : key('valleyMiss')
@@ -542,26 +547,35 @@ export function applySettings(ctx: any): void {
     document.head.appendChild(tag)
   }
 
-  try {
-    ctx.locale?.register?.(LOCALE_NS, {
-      zh: { card: '喵缓存账单' },
-      en: { card: 'Meow Cache Billing' },
-    })
-  } catch {
-    // locale 注册失败只影响标签文案，不影响卡片功能
-  }
-
   const scope = ctx.settingsScope.bind({ namespace: SETTINGS_NS })
 
-  ctx.slots.inject('settings.plugin.item', () =>
+  // 顶级分区（与「通用」「模型」「插件」平级）：list slot 契约 = id + order + label；
+  // label 直接返回中文——不挂 locale 字典（第三方字典注册在官方外壳没有席位，旧卡片形态实测注册不上）。
+  ctx.slots.inject('settings.section', () =>
     ctx.slots.register(
       {
-        name: 'settings.plugin.item',
-        key: SETTINGS_NS,
-        locale: `${LOCALE_NS}.card`,
+        name: 'settings.section',
+        id: SETTINGS_NS,
+        order: 30,
+        label: () => '喵缓存账单',
         inject: (): unknown => ({ scope }),
       },
-      BillingCard,
+      BillingSection,
     ),
+  )
+}
+
+/** 顶级分区整页：标题 + 说明 + 价目表主体（BillingCard）。 */
+function BillingSection(props: { scope: any }): any {
+  return el(
+    'div',
+    { className: 'meowcb_set_page' },
+    el('h2', { className: 'meowcb_set_title' }, '喵缓存账单'),
+    el(
+      'p',
+      { className: 'meowcb_set_subtitle' },
+      '上下文缓存到底花了多少钱，这里能改价、能补价。改完即时生效，无需重启。',
+    ),
+    el(BillingCard, { scope: props.scope }),
   )
 }

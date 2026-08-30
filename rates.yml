@@ -60,11 +60,29 @@ models:
       output: 13.5
     cacheSaving: null
 
-  # 一口价示例（价格待填，填好数字后把下面几行的注释符去掉即可生效）：
-  # - model: glm-5.3-flash
-  #   provider: openrouter
-  #   const:
-  #     hit: 0
-  #     miss: 0
-  #     output: 0
-  #   cacheSaving: null
+  # ── 智谱 GLM（2026-08-30 刊例，bigmodel.cn/pricing；一口价，无峰谷）──
+  # glm-5.3 / glm-5.2：缓存命中限时免费（原价 2 元/百万），恢复收费后把 hit 改回 2
+  - model: glm-5.3
+    timezone: Asia/Shanghai
+    const:
+      hit: 0
+      miss: 8
+      output: 28
+    cacheSaving: null
+
+  - model: glm-5.2
+    timezone: Asia/Shanghai
+    const:
+      hit: 0
+      miss: 8
+      output: 28
+    cacheSaving: null
+
+  # glm-5.3-flash：限时五折（原价 miss 0.8 / output 2.8 / hit 0.23），到期请改回原价
+  - model: glm-5.3-flash
+    timezone: Asia/Shanghai
+    const:
+      hit: 0.115
+      miss: 0.4
+      output: 1.4
+    cacheSaving: null

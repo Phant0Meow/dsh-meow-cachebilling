@@ -27,6 +27,8 @@ const hostOptions = {
   outfile: 'lib/index.js',
   sourcemap: true,
   logLevel: 'info',
+  // 保留 UTF-8 源码字符（默认 ascii 会把中文注释/字符串转成 \uXXXX，产物难读）
+  charset: 'utf8',
 };
 
 const clientOptions = {
@@ -40,10 +42,12 @@ const clientOptions = {
   // react 走 shell 单例（ModuleLoader 的 require 解析到 seed 里的 react），
   // 不能打进 bundle——否则双 React 实例会崩掉 slots 渲染。
   external: ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client'],
+  // 同上：中文文案（账单标题等）保持 UTF-8 原样输出，不转义
+  charset: 'utf8',
   banner: {
     js: [
       'window.__ModuleLoader__.load({',
-      '  id: "meow-cachebilling",',
+      '  id: "dsh-cache-billing",',
       '  factory: (require) => {',
       '    var module = { exports: {} };',
       '    var exports = module.exports;',

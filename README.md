@@ -135,7 +135,9 @@ dsh plugin --profile web add meow-cachebilling
 
 ## 致谢
 
-三级账单（当前每次API请求 / 当前轮 / 会话累计）、第三方中转支持、缓存失效统计，来自 [better-er](https://github.com/better-er) 的大幅重写（[#2](https://github.com/Phant0Meow/dsh-meow-cachebilling/pull/2)）；账单底部「梁文峰/梁文谷」的峰谷彩蛋也是他的手笔，我们觉得有趣就保留了。峰谷计价本身是本插件原有的功能，他这版原样沿用。多谢！
+三级账单（当前每次API请求 / 当前轮 / 会话累计）、第三方中转支持、api返回的缓存失效次数统计，来自 [better-er](https://github.com/better-er) 的大幅重写（[#2](https://github.com/Phant0Meow/dsh-meow-cachebilling/pull/2)）；账单底部「梁文峰/梁文谷」的峰谷彩蛋也是他的手笔，我们觉得有趣就保留了。峰谷计价本身是本插件原有的功能，他这版原样沿用。感谢他给我们提的PR，感谢他的贡献！
+
+欢迎大家提各种PR！插件还会更新，你fork了之后merge过来，之后的更新你也能接上~而且，大家一起写，才有趣嘛。
 
 ## License
 

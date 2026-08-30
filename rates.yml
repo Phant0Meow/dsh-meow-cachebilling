@@ -66,6 +66,7 @@ models:
   # ── 智谱 GLM（2026-08-30 刊例，bigmodel.cn/pricing；一口价，无峰谷）──
   # glm-5.3 / glm-5.2：缓存命中限时免费（原价 2 元/百万），恢复收费后把 hit 改回 2
   - model: glm-5.3
+    provider: zai-coding-cn
     timezone: Asia/Shanghai
     const:
       hit: 0
@@ -74,6 +75,7 @@ models:
     cacheSaving: null
 
   - model: glm-5.2
+    provider: zai-coding-cn
     timezone: Asia/Shanghai
     const:
       hit: 0
@@ -83,6 +85,7 @@ models:
 
   # glm-5.3-flash：限时五折（原价 miss 0.8 / output 2.8 / hit 0.23），到期请改回原价
   - model: glm-5.3-flash
+    provider: zai-coding-cn
     timezone: Asia/Shanghai
     const:
       hit: 0.115

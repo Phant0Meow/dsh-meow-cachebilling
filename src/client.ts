@@ -10,6 +10,7 @@
  */
 
 import * as React from 'react'
+import { applySettings } from './settings'
 
 /** 样式注入标识（防重复注入）。 */
 const CSS_ID = 'meow-cachebilling-css'
@@ -368,14 +369,17 @@ function CacheDataHook(props: any) {
 
   return React.createElement('span', {
     'data-meow-cachebilling': 'hook',
+    'data-meowcb-version': 'settings-ui-1',
     style: { display: 'none' },
   })
 }
 
-export const inject = ['slots']
+export const inject = ['slots', 'connection', 'remote', 'settingsScope', 'settingsSchema']
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any): void {
+  // 版本标记：排障用，每次改动 bump——rev 滞后时看控制台标记就知道浏览器跑的是哪一版
+  console.log('[meow-cachebilling] client bundle: settings-ui-1')
   if (
     typeof document !== 'undefined' &&
     document.querySelector(`style[data-plugin-css="${CSS_ID}"]`) === null
@@ -403,4 +407,10 @@ export function apply(ctx: any): void {
       dispose()
     }
   })
+  // 设置页模块（独立文件 src/settings.ts，不掺和账单渲染）：探针阶段失败也只警告，绝不影响账单。
+  try {
+    applySettings(ctx)
+  } catch (e) {
+    console.warn('[meow-cachebilling] 设置页注册失败（不影响账单）：', e)
+  }
 }

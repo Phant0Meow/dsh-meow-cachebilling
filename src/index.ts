@@ -13,10 +13,15 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { parse as parseYaml } from 'yaml'
+import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import sz from '@deepseek-ai/schemastery'
 import { z } from 'zod'
 
 /** 插件名，与 cordis.patch.yml 的 name 一致，loader 诊断用。 */
 export const name = 'meow-cachebilling'
+
+/** 设置命名空间：预填层(rates.yml)之上的用户层住这里，与设置页卡片、手编 settings.yaml 三方共用。 */
+const SETTINGS_NS = settingsNamespace('meow-cachebilling')
 
 /** 必需服务：sessionProjections 由 @deepseek-ai/dsh-session-projection 提供。 */
 export const inject = ['sessionProjections']
@@ -59,8 +64,29 @@ interface RateEntry {
 }
 
 const DAY_INDEX: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 }
+const DAY_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 const WEEKDAY_INDEX: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
 const RANGE_PATTERN = /^(\d{1,2}):([0-5]\d)-(\d{1,2}):([0-5]\d)$/
+
+/** 单个天 token → 星期下标列表：支持单天（mon）与区间（mon-fri，按周顺序前向展开，可跨周回到起点）。 */
+function resolveDayDays(day: string): number[] {
+  const p = day.toLowerCase()
+  const span = /^([a-z]{3})-([a-z]{3})$/.exec(p)
+  if (span) {
+    const a = DAY_ORDER.indexOf(span[1])
+    const b = DAY_ORDER.indexOf(span[2])
+    if (a < 0 || b < 0) throw new Error(`未知星期 "${day}"（可用 mon tue wed thu fri sat sun）`)
+    const out: number[] = []
+    for (let i = a; ; i = (i + 1) % 7) {
+      out.push(DAY_INDEX[DAY_ORDER[i]])
+      if (i === b) break
+    }
+    return out
+  }
+  const idx = DAY_INDEX[p]
+  if (idx === undefined) throw new Error(`未知星期 "${day}"（可用 mon tue wed thu fri sat sun，或 mon-fri 区间）`)
+  return [idx]
+}
 
 const pricesShape = {
   hit: z.number().nonnegative(),
@@ -172,15 +198,15 @@ function compileEntry(raw: RawEntry, label: string): { ok: true; entry: RateEntr
     const peakMinutes = new Map<number, Array<[number, number]>>()
     for (const group of raw.peak.when) {
       for (const day of group.days) {
-        const idx = DAY_INDEX[day.toLowerCase()]
-        if (idx === undefined) throw new Error(`未知星期 "${day}"（可用 mon tue wed thu fri sat sun）`)
-        const list = peakMinutes.get(idx) ?? []
-        for (const line of group.ranges) {
-          const [start, end] = parseRange(line)
-          if (list.some(([s, e]) => start < e && s < end)) throw new Error(`峰时段与已有区间重叠：${line}`)
-          list.push([start, end])
+        for (const idx of resolveDayDays(day)) {
+          const list = peakMinutes.get(idx) ?? []
+          for (const line of group.ranges) {
+            const [start, end] = parseRange(line)
+            if (list.some(([s, e]) => start < e && s < end)) throw new Error(`峰时段与已有区间重叠：${line}`)
+            list.push([start, end])
+          }
+          peakMinutes.set(idx, list.sort((a, b) => a[0] - b[0]))
         }
-        peakMinutes.set(idx, list.sort((a, b) => a[0] - b[0]))
       }
     }
     return {
@@ -202,26 +228,64 @@ const DEFAULT_ENTRIES: RateEntry[] = ratesFileSchema
 /** 未知模型的估算兜底：永远用内置 flash 表，不随用户 rates.yml 增删而消失。 */
 const FALLBACK_ENTRY = DEFAULT_ENTRIES.find((e) => e.model === 'deepseek-v4-flash')!
 
-/** 读包根 rates.yml；缺失/损坏/全非法时回退内置默认表。任何异常都不外抛——手填文件绝不允许弄崩 host。 */
-function loadRates(): { entries: RateEntry[]; source: 'rates.yml' | 'builtin' } {
-  try {
-    const file = fileURLToPath(new URL('../rates.yml', import.meta.url))
-    const raw = ratesFileSchema.parse(parseYaml(readFileSync(file, 'utf8')))
-    const entries: RateEntry[] = []
-    raw.models.forEach((item, i) => {
-      const r = compileEntry(item, `rates.yml #${i + 1}`)
-      if (r.ok) entries.push(r.entry)
-      else console.warn(`[meow-cachebilling] rates.yml 条目 ${i + 1}（${item.model}）已跳过：${r.error}`)
-    })
-    if (entries.length > 0) return { entries, source: 'rates.yml' }
-    console.warn('[meow-cachebilling] rates.yml 没有有效条目，回退内置默认价目表')
-  } catch (e) {
-    console.warn(`[meow-cachebilling] rates.yml 读取失败，回退内置默认价目表：${e instanceof Error ? e.message : String(e)}`)
+/** 条目身份键："provider|model"（provider 缺省记 "*"）。预填层与用户层按它对齐覆盖关系。 */
+const entryKey = (e: { model: string; provider?: string | null }): string =>
+  `${(e.provider ?? '*').toLowerCase()}/${e.model.toLowerCase()}`
+
+function compileMap(raw: Record<string, RawEntry>, label: string): Map<string, RateEntry> {
+  const map = new Map<string, RateEntry>()
+  for (const [key, item] of Object.entries(raw)) {
+    const r = compileEntry(item, `${label} · ${key}`)
+    if (r.ok) map.set(key, r.entry)
+    else console.warn(`[meow-cachebilling] ${label} 条目 ${key} 已跳过：${r.error}`)
   }
-  return { entries: DEFAULT_ENTRIES, source: 'builtin' }
+  return map
 }
 
-const COMPILED = loadRates()
+/** 预填层原始条目：包根 rates.yml（缺失/损坏回退内置默认表）。任何异常都不外抛——手填文件绝不允许弄崩 host。 */
+const PREFILL_RAW: Record<string, RawEntry> = (() => {
+  try {
+    const file = fileURLToPath(new URL('../rates.yml', import.meta.url))
+    const models = ratesFileSchema.parse(parseYaml(readFileSync(file, 'utf8'))).models
+    console.log(`[meow-cachebilling] 预填价目表已加载：rates.yml ${models.length} 条`)
+    return Object.fromEntries(models.map((e) => [entryKey(e), e]))
+  } catch (e) {
+    console.warn(`[meow-cachebilling] rates.yml 读取失败，回退内置默认价目表：${e instanceof Error ? e.message : String(e)}`)
+    return Object.fromEntries(RATE_DEFAULTS_RAW.models.map((e) => [entryKey(e), e]))
+  }
+})()
+
+/** 预填层编译产物（rates.yml 或默认表，启动时定，随发版更新）。 */
+const COMPILED_PREFILL: Map<string, RateEntry> = compileMap(PREFILL_RAW, '预填')
+
+/** 合成层：base(预填) ⊕ user(settings) 在 field 级覆盖；rateOf 只查这张。 */
+let mergedEntries: RateEntry[] = Array.from(COMPILED_PREFILL.values())
+
+/** 从合成值重编译。单条坏条目回落预填值，绝不因手编 settings.yaml 让账单哑火。 */
+function recompileMerged(composed: unknown): void {
+  const raw = composed as Record<string, RawEntry> | null | undefined
+  const keys = raw ? Object.keys(raw) : []
+  if (keys.length === 0) {
+    mergedEntries = Array.from(COMPILED_PREFILL.values())
+    return
+  }
+  const map = new Map<string, RateEntry>()
+  for (const key of keys) {
+    const r = compileEntry(raw![key] as RawEntry, `settings · ${key}`)
+    if (r.ok) {
+      map.set(key, r.entry)
+    } else {
+      const fallback = COMPILED_PREFILL.get(key)
+      if (fallback) {
+        map.set(key, fallback)
+        console.warn(`[meow-cachebilling] settings 条目 ${key} 已跳过（回落预填）：${r.error}`)
+      } else {
+        console.warn(`[meow-cachebilling] settings 条目 ${key} 已跳过：${r.error}`)
+      }
+    }
+  }
+  if (map.size > 0) mergedEntries = Array.from(map.values())
+}
 
 /** 条目时区的星期与分钟（h23 午夜=0；个别 ICU 午夜给 "24"，取模兜回 0）。 */
 function localClock(clock: Intl.DateTimeFormat, timeMs: number): { day: number; minutes: number } {
@@ -264,7 +328,7 @@ function rateOf(
 ): { row: RateRow; tier: Tier | null; matched: boolean } {
   const key = (model ?? '').toLowerCase()
   const providerKey = provider ? provider.toLowerCase() : null
-  const entry = lookupEntry(COMPILED.entries, providerKey, key)
+  const entry = lookupEntry(mergedEntries, providerKey, key)
   if (entry === null) {
     const peak = inPeak(FALLBACK_ENTRY, timeMs)
     return { row: peak ? FALLBACK_ENTRY.peak! : FALLBACK_ENTRY.valley!, tier: peak ? 'peak' : 'offPeak', matched: false }
@@ -740,7 +804,34 @@ export function apply(ctx: any, _config: any): void {
       },
     })
   })
+
+  // ── 设置命名空间：双层价目表的用户层 ──
+  // base = 预填层（rates.yml），user = 设置页/手编 settings.yaml；field 级覆盖，unset 回落预填。
+  // scope.watch → onChange → 重编译合成层：设置页改价目即时生效，无需重启。
+  let currentGetter: () => unknown = (): unknown => PREFILL_RAW
+  const recompile = (): void => {
+    recompileMerged(currentGetter())
+  }
+  try {
+    installSettingsSection(ctx, SETTINGS_NS, sz.dict(sz.any()), PREFILL_RAW, {
+      // RPC 写入的严格校验：任何一条编不过就拒写（手编 settings.yaml 不走这里，由 recompile 防御性回落兜底）
+      validate: (value: unknown): void => {
+        for (const [key, item] of Object.entries(value as Record<string, RawEntry>)) {
+          const r = compileEntry(item as RawEntry, `settings · ${key}`)
+          if (!r.ok) throw new Error(`条目 ${key}：${r.error}`)
+        }
+      },
+      setSource: (get: () => unknown): void => {
+        currentGetter = get
+      },
+      onChange: (): void => {
+        recompile()
+      },
+    })
+  } catch (e) {
+    console.warn('[meow-cachebilling] 设置命名空间注册失败（账单继续使用预填层）：', e)
+  }
 }
 
 /** 诊断口：node -e 里用固定时间戳验证价目表与峰谷判定，不进任何运行时路径。 */
-export const _rates = { rateOf, loadRates }
+export const _rates = { rateOf, mergedEntries: (): RateEntry[] => mergedEntries, PREFILL_RAW }

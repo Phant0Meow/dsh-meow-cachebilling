@@ -74,14 +74,13 @@ But it really does save money...
 
 ## Features
 
-- **DeepSeek official API only**: this plugin prices official DeepSeek routes only; on any other LLM API or third-party relay the readout simply doesn't show — better silent than wrong.
-- **The bill lives in the context menu**: click the context ring beside the composer and the round's bill sits at the bottom of its panel — `this round ¥0.0219` plus cache/miss/output lines, right next to "how much context is used"
-- **One round = one model API call**: if the AI calls tools mid-turn and requests again, that's a new round; figures refresh per request and always show the current round only
-- **Automatic peak/off-peak pricing**: weekday peak hours (Beijing time 09:00–12:00 / 14:00–18:00) bill at peak rates; all other hours plus Saturdays and Sundays bill at half-price valley rates — independent of your system timezone, computed purely from event time
-- **Per-model pricing**: V4 Flash and V4 Pro differ; each round is priced by the model that actually served it
-- **Readable amounts**: two decimal places at or above ¥0.01; below that, one significant digit — so even a 0.000012 round never reads as zero
-
-A footer line under the bill notes the turn number, model, peak/valley tier, and hit rate.
+- **Third-party relays welcome**: not limited to the official DeepSeek route — official routes price exactly off the rate card; any relay that reports usage gets billed too. Models on the rate card price off the card; unmatched ones estimate at flash rates with an "estimate" tag in the bill. Routes with no provider at all stay hidden.
+- **The bill lives in the context menu**: click the context ring beside the composer and the bill sits at the bottom of its panel, right next to "how much context is used"
+- **Three timing tiers**: current API call / current turn (multi-call accumulation) / session total (with call count). Each tier is one header line with total tokens and cost, plus indented cache-hit, cache-miss and output lines with tokens and money
+- **Session total**: the whole session is priced call by call at each call's own peak/valley rate, plus cache-invalidation stats (write-misses and full misses); some relays report cache-write tokens, shown when present
+- **Automatic peak/off-peak pricing**: weekday peak hours (Beijing time 09:00–12:00 / 14:00–18:00) bill at peak rates; all other hours plus Saturdays and Sundays bill at half-price valley rates — independent of your system timezone, computed purely from event time. The footer writes 梁文峰/梁文谷 on official DeepSeek routes, plain "peak/valley" elsewhere
+- **Per-model pricing**: V4 Flash / V4 Pro / V4 Flash Vision Exp differ; each call is priced by the model that actually served it
+- **Readable amounts**: fixed decimals per tier — 4 for the current call, 3 for the turn, 2 for the session — trailing zeros kept, so even 0.0001 never reads as zero
 
 ## Install
 
@@ -109,11 +108,13 @@ Built-in price table (CNY per million tokens, official rate card of 2026-08-17):
 
 Data source: `usage.cacheReadTokens` (`prompt_cache_hit_tokens` in DeepSeek's API). This plugin is a local estimate; actual billing is up to your DeepSeek invoice.
 
+On third-party relays the rate card may differ — matched models estimate at the card price, unmatched ones at flash price. Still a local estimate; actual billing is up to your invoice.
+
 ## Notes
 
-- Only official DeepSeek API routes are priced; readouts never appear for other providers.
-- Rounds without a reusable prefix honestly show ¥0 — the first turn of a fresh session has nothing to reuse yet.
-- If prices change, edit the price table in `src/index.ts`.
+- Official DeepSeek routes price exactly; third-party relays estimate, tagged as such when the model isn't on the rate card.
+- Calls without a reusable prefix honestly show a small miss cost — the first call of a fresh session has nothing to reuse yet.
+- If prices change, edit the price table in `src/index.ts` and rebuild.
 
 ## License
 

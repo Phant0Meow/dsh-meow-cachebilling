@@ -47,7 +47,7 @@ const clientOptions = {
   banner: {
     js: [
       'window.__ModuleLoader__.load({',
-      '  id: "dsh-cache-billing",',
+      '  id: "meow-cachebilling",',
       '  factory: (require) => {',
       '    var module = { exports: {} };',
       '    var exports = module.exports;',

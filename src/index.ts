@@ -1,17 +1,17 @@
 /**
- * dsh-cache-billing — 缓存账单 host 端。
+ * meow-cachebilling — 缓存账单 host 端。
  *
  * 唯一职责：注册一个 session projection 单元 cacheBilling，盯住最新一次大模型 API 请求的缓存命中 token 数，按 DeepSeek 峰谷价折算成金额，随推送帧直推浏览器，零轮询零路由。
  *
  * 一轮的定义：每次请求大模型 API 算一轮。人类说话之后 AI 可能多次调用工具，工具结果又返回给大模型请求 API，每次请求算一轮。会话事件流中即 turn 和 step：同一 step 的 chunk 流式样本被 assistant/message 最终样本替换，官方 token-meter 同款替换语义；新 step 出现即覆盖上一轮，只显示当前步。turn 是一个用户消息内的多步合计，切换用户消息时重置。
  *
- * 计价口径：本步 cacheReadTokens × 该模型该时刻的缓存命中单价 ÷ 1e6。缓存命中 token 读 usage.cacheReadTokens，DSH adapter 映射自 DeepSeek API 响应的 prompt_cache_hit_tokens。峰谷判定只用事件时间戳做 UTC+8 数学换算，北京 9–12、14–18 点为峰，其余半价，与系统时区无关，本机系统时间不可信。模型从 request/header、request/context 跟踪，assistant/message 的 message.source.model 校正，flash 与 pro 单价不同，认错模型就算错钱。第三方中转同样显示：provider 非空即放行，模型命中价目表就按估算金额计价。
+ * 计价口径：本步 cacheReadTokens × 该模型该时刻的缓存命中单价 ÷ 1e6。缓存命中 token 读 usage.cacheReadTokens，DSH adapter 映射自 DeepSeek API 响应的 prompt_cache_hit_tokens。峰谷判定只用事件时间戳做 UTC+8 数学换算，北京 9–12、14–18 点为峰，其余半价，与系统时区无关，本机系统时间不可信。模型从 request/header、request/context 跟踪，assistant/message 的 message.source.model 校正，flash 与 pro 单价不同，认错模型就算错钱。第三方中转同样显示：provider 非空即放行；模型命中价目表按刊例价计，未命中按 flash 价估算（priceMatched=false 供 client 标注估算）。
  */
 
 import { z } from 'zod'
 
 /** 插件名，与 cordis.patch.yml 的 name 一致，loader 诊断用。 */
-export const name = 'dsh-cache-billing'
+export const name = 'meow-cachebilling'
 
 /** 必需服务：sessionProjections 由 @deepseek-ai/dsh-session-projection 提供。 */
 export const inject = ['sessionProjections']
@@ -56,16 +56,19 @@ function isPeakBeijing(timeMs: number): boolean {
   return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18)
 }
 
-/** 模型在某时刻的费率行：先精确匹配，再用后缀匹配吃掉带命名空间前缀的名字。 */
-function rateOf(model: string | null, timeMs: number): { row: RateRow; tier: Tier } {
+/** 模型在某时刻的费率行：先精确匹配，再用后缀匹配吃掉带命名空间前缀的名字；未命中走兜底价，matched=false 供客户端标注「估算」。 */
+function rateOf(
+  model: string | null,
+  timeMs: number,
+): { row: RateRow; tier: Tier; matched: boolean } {
   const key = (model ?? '').toLowerCase()
   const peak = isPeakBeijing(timeMs)
   const table = peak ? PEAK_RATES : OFFPEAK_RATES
-  if (key in table) return { row: table[key], tier: peak ? 'peak' : 'offPeak' }
+  if (key in table) return { row: table[key], tier: peak ? 'peak' : 'offPeak', matched: true }
   for (const [suffix, row] of Object.entries(table)) {
-    if (key.endsWith(suffix)) return { row, tier: peak ? 'peak' : 'offPeak' }
+    if (key.endsWith(suffix)) return { row, tier: peak ? 'peak' : 'offPeak', matched: true }
   }
-  return { row: FALLBACK, tier: peak ? 'peak' : 'offPeak' }
+  return { row: FALLBACK, tier: peak ? 'peak' : 'offPeak', matched: false }
 }
 
 const round9 = (n: number): number => Math.round(n * 1e9) / 1e9
@@ -404,6 +407,8 @@ export function apply(ctx: any, _config: any): void {
           provider: z.string().nullable(),
           tier: z.enum(['peak', 'offPeak']).nullable(),
           unitPricePerM: z.number().nullable(),
+          /** 模型是否命中价目表；false 时金额为 flash 价估算，客户端标注「估算」 */
+          priceMatched: z.boolean(),
           turn: z.number().int().nullable(),
           step: z.number().int().nullable(),
           /** 当前轮金额总额，命中加未命中加输出 */
@@ -461,6 +466,7 @@ export function apply(ctx: any, _config: any): void {
               provider: state.provider,
               tier: null,
               unitPricePerM: null,
+              priceMatched: rateOf(state.model, Date.now()).matched,
               turn: null,
               step: null,
               turnCost: 0,
@@ -484,7 +490,7 @@ export function apply(ctx: any, _config: any): void {
             }
           }
           const totalInput = s.inputTokens + s.cacheReadTokens + s.cacheWriteTokens
-          const { row, tier } = rateOf(s.model, s.time)
+          const { row, tier, matched } = rateOf(s.model, s.time)
           const cost = round9((s.cacheReadTokens * row.cacheHit) / 1e6)
           const missCost = round9(((s.inputTokens + s.cacheWriteTokens) * row.cacheMiss) / 1e6)
           const outputCost = round9((s.outputTokens * row.output) / 1e6)
@@ -504,6 +510,7 @@ export function apply(ctx: any, _config: any): void {
             provider: s.provider,
             tier,
             unitPricePerM: row.cacheHit,
+            priceMatched: matched,
             turn: s.turn,
             step: s.step,
             turnCost:

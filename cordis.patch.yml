@@ -1,7 +1,7 @@
-# dsh-cache-billing bundle patch: inserts this plugin into a profile's layer stack.
+# meow-cachebilling bundle patch: inserts this plugin into a profile's layer stack.
 # Applied when a profile lists this bundle (or wired by dev_install_package).
 - insert:
-    - id: dsh-cache-billing
-      name: 'dsh-cache-billing'
+    - id: meow-cachebilling
+      name: 'meow-cachebilling'
       config:
         enabled: true

@@ -1,6 +1,6 @@
 {
   "name": "meow-cachebilling",
-  "version": "0.3.0",
+  "version": "0.4.1",
   "description": "喵账单：上下文圆环弹层里实时算账——当前每次API请求/当前轮/会话累计三块明细，缓存命中/未命中/输出各带 token 与金额，峰谷/一口价自动计价（价目表 rates.yml 可手填），专治『缓存命中率 100% 却越用越贵』",
   "keywords": [
     "deepseek-harness",
@@ -47,6 +47,8 @@
     "watch": "node build.mjs --watch"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.1",
     "esbuild": "^0.25.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"

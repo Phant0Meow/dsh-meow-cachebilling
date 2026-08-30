@@ -116,6 +116,10 @@ On third-party relays the rate card may differ — matched models estimate at th
 - Calls without a reusable prefix honestly show a small miss cost — the first call of a fresh session has nothing to reuse yet.
 - If prices change, edit the price table in `src/index.ts` and rebuild.
 
+## Credits
+
+The three timing tiers (current API call / current turn / session total), third-party relay support and the cache-invalidation stats come from a major rewrite by [better-er](https://github.com/better-er) ([#2](https://github.com/Phant0Meow/dsh-meow-cachebilling/pull/2)); the 梁文峰/梁文谷 peak/valley pun in the bill footer is his idea too — we found it fun and kept it. The peak/valley pricing itself is this plugin's own feature, which his version carried over as-is. Thank you!
+
 ## License
 
 MIT

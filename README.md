@@ -133,6 +133,10 @@ dsh plugin --profile web add meow-cachebilling
 - 账目只认 `usage` 的 input / cacheRead / cacheWrite / output 四类 token。
 - 硬性约束：`lib/client.js` 的 `factory` 必须以 `return module.exports` 结尾，否则模块导出为 `undefined`，DSH 启动即 fail-loud。
 
+## 致谢
+
+三级账单（当前每次API请求 / 当前轮 / 会话累计）、第三方中转支持、缓存失效统计，来自 [better-er](https://github.com/better-er) 的大幅重写（[#2](https://github.com/Phant0Meow/dsh-meow-cachebilling/pull/2)）；账单底部「梁文峰/梁文谷」的峰谷彩蛋也是他的手笔，我们觉得有趣就保留了。峰谷计价本身是本插件原有的功能，他这版原样沿用。多谢！
+
 ## License
 
 MIT

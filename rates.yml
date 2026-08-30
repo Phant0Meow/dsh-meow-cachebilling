@@ -16,6 +16,7 @@
 
 models:
   - model: deepseek-v4-flash
+    provider: deepseek-official
     timezone: Asia/Shanghai
     peak:
       hit: 0.1
@@ -31,6 +32,7 @@ models:
     cacheSaving: null
 
   - model: deepseek-v4-flash-vision-exp
+    provider: deepseek-official
     timezone: Asia/Shanghai
     peak:
       hit: 0.1
@@ -46,6 +48,7 @@ models:
     cacheSaving: null
 
   - model: deepseek-v4-pro
+    provider: deepseek-official
     timezone: Asia/Shanghai
     peak:
       hit: 0.3

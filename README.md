@@ -134,8 +134,13 @@ dsh plugin --profile web add meow-cachebilling
 - 硬性约束：`lib/client.js` 的 `factory` 必须以 `return module.exports` 结尾，否则模块导出为 `undefined`，DSH 启动即 fail-loud。
 
 ## 致谢
+感谢 [better-er](https://github.com/better-er) 的贡献！
 
-三级账单（当前每次API请求 / 当前轮 / 会话累计）、第三方中转支持、api返回的缓存失效次数统计，来自 [better-er](https://github.com/better-er) 的大幅重写（[#2](https://github.com/Phant0Meow/dsh-meow-cachebilling/pull/2)）；账单底部「梁文峰/梁文谷」的峰谷彩蛋也是他的手笔，我们觉得有趣就保留了。峰谷计价本身是本插件原有的功能，他这版原样沿用。感谢他给我们提的PR，感谢他的贡献！
+三级账单（当前每次API请求 / 当前轮 / 会话累计）、api返回的缓存失效次数统计，来自 [better-er](https://github.com/better-er) 的大幅重写（[#2](https://github.com/Phant0Meow/dsh-meow-cachebilling/pull/2)）；
+他也打开了本插件对非ds官方api的显示，我之后的确想加对其他api的支持，所以也merge了这处改动。
+账单底部把原本的「峰价/谷价」改为「梁文峰/梁文谷」的彩蛋也是他的手笔，我们觉得有趣就也保留了。
+感谢他给我们提的PR，感谢他的贡献！
+
 
 欢迎大家提各种PR！插件还会更新，你fork了之后merge过来，之后的更新你也能接上~而且，大家一起写，才有趣嘛。
 

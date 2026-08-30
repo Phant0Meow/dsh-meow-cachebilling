@@ -1,7 +1,7 @@
 {
-  "name": "meow-cachebilling",
+  "name": "dsh-cache-billing",
   "version": "0.1.0",
-  "description": "喵账单：输入框下方一行实时读数——本轮请求的缓存命中/未命中/输出各花多少钱，峰谷自动计价，专治『缓存命中率 100% 却越用越贵』",
+  "description": "缓存账单：上下文圆环弹层里实时算账——当前步/当前轮/会话累计三块明细，缓存命中/未命中/输出各带 token 与金额，峰谷自动计价，第三方中转照常记账，专治『缓存命中率 100% 却越用越贵』",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -13,9 +13,9 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Phant0Meow/dsh-meow-cachebilling.git"
+    "url": "git+https://github.com/better-er/dsh-cache-billing.git"
   },
-  "author": "Phant0Meow",
+  "author": "betterer",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

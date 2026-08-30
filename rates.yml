@@ -5,8 +5,8 @@
 #   provider    可选：填了则只对该路由生效（与 API 返回的 provider 串一致）；不填 = 该模型所有路由通用
 #   timezone    计费方账单时区（IANA 名，如 Asia/Shanghai / America/New_York），缺省 Asia/Shanghai
 #   计价形态三选一：
-#     peak + valley   峰谷价：when = days × ranges 叉乘（days=星期缩写，ranges="HH:MM-HH:MM"，
-#                     start 含、end 不含，支持 24:00，不支持跨天——要跨请拆两条）；
+#     peak + valley   峰谷价：when = days × ranges 叉乘（days=星期缩写，支持 mon-fri 区间；
+#                     ranges="HH:MM-HH:MM"，start 含、end 不含，支持 24:00，不支持跨天——要跨请拆两条）；
 #                     valley 不写 when，自动取 peak 的补集（含周末全天谷，取决于 peak 覆盖了哪几天）
 #     const           一口价：24 小时同一价
 #   write       可选：缓存写入单价，缺省 = miss（官方 API 不单独报写入价）

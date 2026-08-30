@@ -1,13 +1,18 @@
 /**
  * meow-cachebilling — 缓存账单 host 端。
  *
- * 唯一职责：注册一个 session projection 单元 cacheBilling，盯住最新一次大模型 API 请求的缓存命中 token 数，按 DeepSeek 峰谷价折算成金额，随推送帧直推浏览器，零轮询零路由。
+ * 唯一职责：注册一个 session projection 单元 cacheBilling，盯住最新一次大模型 API 请求的缓存命中 token 数，按价目表折算成金额，随推送帧直推浏览器，零轮询零路由。
  *
  * 一轮的定义：每次请求大模型 API 算一轮。人类说话之后 AI 可能多次调用工具，工具结果又返回给大模型请求 API，每次请求算一轮。会话事件流中即 turn 和 step：同一 step 的 chunk 流式样本被 assistant/message 最终样本替换，官方 token-meter 同款替换语义；新 step 出现即覆盖上一轮，只显示当前步。turn 是一个用户消息内的多步合计，切换用户消息时重置。
  *
- * 计价口径：本步 cacheReadTokens × 该模型该时刻的缓存命中单价 ÷ 1e6。缓存命中 token 读 usage.cacheReadTokens，DSH adapter 映射自 DeepSeek API 响应的 prompt_cache_hit_tokens。峰谷判定只用事件时间戳做 UTC+8 数学换算，北京 9–12、14–18 点为峰，其余半价，与系统时区无关，本机系统时间不可信。模型从 request/header、request/context 跟踪，assistant/message 的 message.source.model 校正，flash 与 pro 单价不同，认错模型就算错钱。第三方中转同样显示：provider 非空即放行；模型命中价目表按刊例价计，未命中按 flash 价估算（priceMatched=false 供 client 标注估算）。
+ * 价目表：包根 rates.yml（可手填，重启生效）。条目三选一：peak+valley（valley 自动取 peak 的补集）或 const（一口价）；when = days × ranges 叉乘，start 含、end 不含。timezone 是计费方账单时区（IANA 名），峰谷判定用 Intl 从事件时间戳取条目时区的星期与时分，不碰系统本地时区（本机系统时间不可信，红线）。
+ *
+ * 模型匹配：provider 限定条目优先于通配条目，各自内部精确→后缀，大小写不敏感；未命中任何条目按内置 deepseek-v4-flash 表估算（matched=false，客户端标注「估算」）。费率按每步事件时刻逐笔判定，跨步不比价。
  */
 
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { parse as parseYaml } from 'yaml'
 import { z } from 'zod'
 
 /** 插件名，与 cordis.patch.yml 的 name 一致，loader 诊断用。 */
@@ -16,59 +21,257 @@ export const name = 'meow-cachebilling'
 /** 必需服务：sessionProjections 由 @deepseek-ai/dsh-session-projection 提供。 */
 export const inject = ['sessionProjections']
 
-// ── 价格表：CNY 元 / 百万 token，2026-08-17 官方峰谷价，多插件源码交叉验证一致 ──
-// 时段政策：2026-08-22 起周六日全天谷价，仅工作日有峰价，用户转发官方邮件告知。
+// ── 价目表（单位：元 / 百万 token）─────────────────────────────────────────
+// 编译后的行：write 编译时缺省 = miss（官方 API 不单独报写入价）。
 
 interface RateRow {
   /** 缓存命中输入单价 */
-  cacheHit: number
-  /** 未命中输入单价（含缓存写入） */
-  cacheMiss: number
+  hit: number
+  /** 未命中输入单价 */
+  miss: number
   /** 输出单价 */
   output: number
+  /** 缓存写入单价，缺省 = miss */
+  write: number
 }
-
-/** 峰谷价模型表，无平价模型，所有模型都参与峰谷，vision-exp 与 flash 同价。 */
-const PEAK_RATES: Record<string, RateRow> = {
-  'deepseek-v4-flash': { cacheHit: 0.1, cacheMiss: 3, output: 9 },
-  'deepseek-v4-flash-vision-exp': { cacheHit: 0.1, cacheMiss: 3, output: 9 },
-  'deepseek-v4-pro': { cacheHit: 0.3, cacheMiss: 9, output: 27 },
-}
-const OFFPEAK_RATES: Record<string, RateRow> = {
-  'deepseek-v4-flash': { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 },
-  'deepseek-v4-flash-vision-exp': { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 },
-  'deepseek-v4-pro': { cacheHit: 0.15, cacheMiss: 4.5, output: 13.5 },
-}
-/** 兜底价：未知模型按 flash 峰谷价估算，宁近似不空转。 */
-const FALLBACK: RateRow = PEAK_RATES['deepseek-v4-flash']
 
 type Tier = 'peak' | 'offPeak'
 
-/**
- * 时刻是否为北京高峰。纯 UTC+8 数学换算，与系统时区无关，红线。政策：周六日全天谷价，仅工作日有峰价；工作日峰段仍为 09:00–12:00、14:00–18:00 北京时间。
- */
-function isPeakBeijing(timeMs: number): boolean {
-  const shifted = timeMs + 8 * 3600 * 1000
-  const shiftedDate = new Date(shifted)
-  const day = shiftedDate.getUTCDay() // 0=周日 6=周六，同一 shifted 时刻取星期与小时，跨日一致
-  if (day === 0 || day === 6) return false // 周末全天谷价
-  const hour = shiftedDate.getUTCHours()
-  return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18)
+/** 编译后的单模型条目。 */
+interface RateEntry {
+  /** 小写模型名，匹配 = 精确 → 后缀 */
+  model: string
+  /** 小写 provider 限定，null = 通配所有路由 */
+  provider: string | null
+  timezone: string
+  /** 预格式化器：从事件时间戳取条目时区的星期与时分 */
+  clock: Intl.DateTimeFormat
+  kind: 'const' | 'peakvalley'
+  /** 一口价行（kind = const） */
+  flat?: RateRow
+  /** 峰价行（kind = peakvalley） */
+  peak?: RateRow
+  /** 谷价行（kind = peakvalley） */
+  valley?: RateRow
+  /** 峰时段：星期几（0=周日）→ 升序 [startMin, endMin) 列表，编译时已校验不重叠 */
+  peakMinutes?: Map<number, Array<[number, number]>>
+  cacheSaving: string | number | null
 }
 
-/** 模型在某时刻的费率行：先精确匹配，再用后缀匹配吃掉带命名空间前缀的名字；未命中走兜底价，matched=false 供客户端标注「估算」。 */
+const DAY_INDEX: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 }
+const WEEKDAY_INDEX: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
+const RANGE_PATTERN = /^(\d{1,2}):([0-5]\d)-(\d{1,2}):([0-5]\d)$/
+
+const pricesShape = {
+  hit: z.number().nonnegative(),
+  miss: z.number().nonnegative(),
+  output: z.number().nonnegative(),
+  write: z.number().nonnegative().optional(),
+}
+const whenGroupSchema = z.object({
+  days: z.array(z.string().min(1)).min(1),
+  ranges: z.array(z.string().min(1)).min(1),
+})
+const entrySchema = z.object({
+  model: z.string().min(1),
+  provider: z.string().min(1).optional(),
+  timezone: z.string().min(1).optional(),
+  peak: z.object({ ...pricesShape, when: whenGroupSchema.array().min(1) }).optional(),
+  valley: z.object(pricesShape).optional(),
+  const: z.object(pricesShape).optional(),
+  cacheSaving: z.union([z.string(), z.number()]).nullish(),
+})
+type RawEntry = z.infer<typeof entrySchema>
+const ratesFileSchema = z.object({ models: z.array(entrySchema) })
+
+/** 内置默认价目表（rates.yml 缺失/损坏时的兜底）：DeepSeek 官方 2026-08-17 峰谷刊例，周六日全天谷。 */
+const RATE_DEFAULTS_RAW = {
+  models: [
+    {
+      model: 'deepseek-v4-flash',
+      timezone: 'Asia/Shanghai',
+      peak: {
+        hit: 0.1,
+        miss: 3,
+        output: 9,
+        when: [{ days: ['mon', 'tue', 'wed', 'thu', 'fri'], ranges: ['09:00-12:00', '14:00-18:00'] }],
+      },
+      valley: { hit: 0.05, miss: 1.5, output: 4.5 },
+      cacheSaving: null,
+    },
+    {
+      model: 'deepseek-v4-flash-vision-exp',
+      timezone: 'Asia/Shanghai',
+      peak: {
+        hit: 0.1,
+        miss: 3,
+        output: 9,
+        when: [{ days: ['mon', 'tue', 'wed', 'thu', 'fri'], ranges: ['09:00-12:00', '14:00-18:00'] }],
+      },
+      valley: { hit: 0.05, miss: 1.5, output: 4.5 },
+      cacheSaving: null,
+    },
+    {
+      model: 'deepseek-v4-pro',
+      timezone: 'Asia/Shanghai',
+      peak: {
+        hit: 0.3,
+        miss: 9,
+        output: 27,
+        when: [{ days: ['mon', 'tue', 'wed', 'thu', 'fri'], ranges: ['09:00-12:00', '14:00-18:00'] }],
+      },
+      valley: { hit: 0.15, miss: 4.5, output: 13.5 },
+      cacheSaving: null,
+    },
+  ],
+} satisfies z.infer<typeof ratesFileSchema>
+
+const resolveRow = (p: { hit: number; miss: number; output: number; write?: number }): RateRow => ({
+  hit: p.hit,
+  miss: p.miss,
+  output: p.output,
+  write: p.write ?? p.miss,
+})
+
+/** 解析 "HH:MM-HH:MM" 为分钟区间，start 含、end 不含，end 允许 24:00，不支持跨天。 */
+function parseRange(line: string): [number, number] {
+  const m = RANGE_PATTERN.exec(line.trim())
+  if (!m) throw new Error(`时段格式应为 "HH:MM-HH:MM"，收到 "${line}"`)
+  const start = Number(m[1]) * 60 + Number(m[2])
+  const end = Number(m[3]) * 60 + Number(m[4])
+  if (Number(m[1]) > 24 || Number(m[3]) > 24 || end > 24 * 60) throw new Error(`时段越界：${line}`)
+  if (start >= end) throw new Error(`时段起止倒挂或相等：${line}（不支持跨天，请拆成两条）`)
+  return [start, end]
+}
+
+/** 原始条目 → 编译条目。任何问题都以 { ok:false, error } 返回，绝不抛出。 */
+function compileEntry(raw: RawEntry, label: string): { ok: true; entry: RateEntry } | { ok: false; error: string } {
+  try {
+    const timezone = raw.timezone ?? 'Asia/Shanghai'
+    // 时区有效性：Intl 不认的名字在这里直接抛，由 catch 转成跳过该条目
+    const clock = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+    const base = {
+      model: raw.model.toLowerCase(),
+      provider: raw.provider ? raw.provider.toLowerCase() : null,
+      timezone,
+      clock,
+      cacheSaving: raw.cacheSaving ?? null,
+    }
+    if (raw.const) {
+      if (raw.peak || raw.valley) throw new Error('const 与 peak/valley 互斥，三选一')
+      return { ok: true, entry: { ...base, kind: 'const', flat: resolveRow(raw.const) } }
+    }
+    if (!raw.peak) throw new Error('缺少计价形态：peak+valley 或 const 三选一')
+    if (!raw.valley) throw new Error('peak 需要配套 valley（时段自动取补集，但谷价数字仍要写）')
+    const peakMinutes = new Map<number, Array<[number, number]>>()
+    for (const group of raw.peak.when) {
+      for (const day of group.days) {
+        const idx = DAY_INDEX[day.toLowerCase()]
+        if (idx === undefined) throw new Error(`未知星期 "${day}"（可用 mon tue wed thu fri sat sun）`)
+        const list = peakMinutes.get(idx) ?? []
+        for (const line of group.ranges) {
+          const [start, end] = parseRange(line)
+          if (list.some(([s, e]) => start < e && s < end)) throw new Error(`峰时段与已有区间重叠：${line}`)
+          list.push([start, end])
+        }
+        peakMinutes.set(idx, list.sort((a, b) => a[0] - b[0]))
+      }
+    }
+    return {
+      ok: true,
+      entry: { ...base, kind: 'peakvalley', peak: resolveRow(raw.peak), valley: resolveRow(raw.valley), peakMinutes },
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+const DEFAULT_ENTRIES: RateEntry[] = ratesFileSchema
+  .parse(RATE_DEFAULTS_RAW)
+  .models.map((item, i) => {
+    const r = compileEntry(item, `builtin #${i + 1}`)
+    if (!r.ok) throw new Error(`内置默认价目表编译失败（编程错误）：${r.error}`)
+    return r.entry
+  })
+/** 未知模型的估算兜底：永远用内置 flash 表，不随用户 rates.yml 增删而消失。 */
+const FALLBACK_ENTRY = DEFAULT_ENTRIES.find((e) => e.model === 'deepseek-v4-flash')!
+
+/** 读包根 rates.yml；缺失/损坏/全非法时回退内置默认表。任何异常都不外抛——手填文件绝不允许弄崩 host。 */
+function loadRates(): { entries: RateEntry[]; source: 'rates.yml' | 'builtin' } {
+  try {
+    const file = fileURLToPath(new URL('../rates.yml', import.meta.url))
+    const raw = ratesFileSchema.parse(parseYaml(readFileSync(file, 'utf8')))
+    const entries: RateEntry[] = []
+    raw.models.forEach((item, i) => {
+      const r = compileEntry(item, `rates.yml #${i + 1}`)
+      if (r.ok) entries.push(r.entry)
+      else console.warn(`[meow-cachebilling] rates.yml 条目 ${i + 1}（${item.model}）已跳过：${r.error}`)
+    })
+    if (entries.length > 0) return { entries, source: 'rates.yml' }
+    console.warn('[meow-cachebilling] rates.yml 没有有效条目，回退内置默认价目表')
+  } catch (e) {
+    console.warn(`[meow-cachebilling] rates.yml 读取失败，回退内置默认价目表：${e instanceof Error ? e.message : String(e)}`)
+  }
+  return { entries: DEFAULT_ENTRIES, source: 'builtin' }
+}
+
+const COMPILED = loadRates()
+
+/** 条目时区的星期与分钟（h23 午夜=0；个别 ICU 午夜给 "24"，取模兜回 0）。 */
+function localClock(clock: Intl.DateTimeFormat, timeMs: number): { day: number; minutes: number } {
+  let day = -1
+  let hour = 0
+  let minute = 0
+  for (const p of clock.formatToParts(new Date(timeMs))) {
+    if (p.type === 'weekday') day = WEEKDAY_INDEX[p.value] ?? -1
+    else if (p.type === 'hour') hour = Number(p.value) % 24
+    else if (p.type === 'minute') minute = Number(p.value)
+  }
+  return { day, minutes: hour * 60 + minute }
+}
+
+function inPeak(entry: RateEntry, timeMs: number): boolean {
+  const { day, minutes } = localClock(entry.clock, timeMs)
+  const list = entry.peakMinutes?.get(day)
+  if (!list) return false
+  return list.some(([start, end]) => minutes >= start && minutes < end)
+}
+
+function lookupEntry(entries: RateEntry[], providerKey: string | null, key: string): RateEntry | null {
+  // 先 provider 限定条目、再通配条目；每轮内部先精确、再后缀
+  for (const preferProvider of [true, false]) {
+    for (const exactPass of [true, false]) {
+      for (const e of entries) {
+        if (preferProvider ? e.provider !== providerKey : e.provider !== null) continue
+        if (exactPass ? e.model === key : key.endsWith(e.model)) return e
+      }
+    }
+  }
+  return null
+}
+
+/** 模型在某时刻的费率行。未命中任何条目 → 按内置 flash 表的峰谷口径估算，matched=false 供客户端标注。 */
 function rateOf(
+  provider: string | null,
   model: string | null,
   timeMs: number,
-): { row: RateRow; tier: Tier; matched: boolean } {
+): { row: RateRow; tier: Tier | null; matched: boolean } {
   const key = (model ?? '').toLowerCase()
-  const peak = isPeakBeijing(timeMs)
-  const table = peak ? PEAK_RATES : OFFPEAK_RATES
-  if (key in table) return { row: table[key], tier: peak ? 'peak' : 'offPeak', matched: true }
-  for (const [suffix, row] of Object.entries(table)) {
-    if (key.endsWith(suffix)) return { row, tier: peak ? 'peak' : 'offPeak', matched: true }
+  const providerKey = provider ? provider.toLowerCase() : null
+  const entry = lookupEntry(COMPILED.entries, providerKey, key)
+  if (entry === null) {
+    const peak = inPeak(FALLBACK_ENTRY, timeMs)
+    return { row: peak ? FALLBACK_ENTRY.peak! : FALLBACK_ENTRY.valley!, tier: peak ? 'peak' : 'offPeak', matched: false }
   }
-  return { row: FALLBACK, tier: peak ? 'peak' : 'offPeak', matched: false }
+  if (entry.kind === 'const') return { row: entry.flat!, tier: null, matched: true }
+  const peak = inPeak(entry, timeMs)
+  return { row: peak ? entry.peak! : entry.valley!, tier: peak ? 'peak' : 'offPeak', matched: true }
 }
 
 const round9 = (n: number): number => Math.round(n * 1e9) / 1e9
@@ -131,10 +334,10 @@ interface TurnTotals {
 
 /** 按样本模型与事件时刻计算一轮三笔费用，元，round9 防精度漂移。 */
 function costOf(sample: Sample): { hit: number; miss: number; output: number } {
-  const { row } = rateOf(sample.model, sample.time)
+  const { row } = rateOf(sample.provider, sample.model, sample.time)
   return {
-    hit: round9((sample.cacheReadTokens * row.cacheHit) / 1e6),
-    miss: round9(((sample.inputTokens + sample.cacheWriteTokens) * row.cacheMiss) / 1e6),
+    hit: round9((sample.cacheReadTokens * row.hit) / 1e6),
+    miss: round9((sample.inputTokens * row.miss + sample.cacheWriteTokens * row.write) / 1e6),
     output: round9((sample.outputTokens * row.output) / 1e6),
   }
 }
@@ -466,7 +669,7 @@ export function apply(ctx: any, _config: any): void {
               provider: state.provider,
               tier: null,
               unitPricePerM: null,
-              priceMatched: rateOf(state.model, Date.now()).matched,
+              priceMatched: rateOf(state.provider, state.model, Date.now()).matched,
               turn: null,
               step: null,
               turnCost: 0,
@@ -490,9 +693,9 @@ export function apply(ctx: any, _config: any): void {
             }
           }
           const totalInput = s.inputTokens + s.cacheReadTokens + s.cacheWriteTokens
-          const { row, tier, matched } = rateOf(s.model, s.time)
-          const cost = round9((s.cacheReadTokens * row.cacheHit) / 1e6)
-          const missCost = round9(((s.inputTokens + s.cacheWriteTokens) * row.cacheMiss) / 1e6)
+          const { row, tier, matched } = rateOf(s.provider, s.model, s.time)
+          const cost = round9((s.cacheReadTokens * row.hit) / 1e6)
+          const missCost = round9((s.inputTokens * row.miss + s.cacheWriteTokens * row.write) / 1e6)
           const outputCost = round9((s.outputTokens * row.output) / 1e6)
           const turn = state.turn
           return {
@@ -509,7 +712,7 @@ export function apply(ctx: any, _config: any): void {
             model: s.model,
             provider: s.provider,
             tier,
-            unitPricePerM: row.cacheHit,
+            unitPricePerM: row.hit,
             priceMatched: matched,
             turn: s.turn,
             step: s.step,
@@ -538,3 +741,6 @@ export function apply(ctx: any, _config: any): void {
     })
   })
 }
+
+/** 诊断口：node -e 里用固定时间戳验证价目表与峰谷判定，不进任何运行时路径。 */
+export const _rates = { rateOf, loadRates }

@@ -173,14 +173,16 @@ function renderBill(bill: HTMLElement): void {
   const total = cost + missCost + outputCost
   const symbol = view.currency === 'USD' ? '$' : '¥'
   const official = isOfficialDeepSeek(view.provider)
+  const modelSuffix = typeof view.model === 'string' && view.model !== '' ? ` · ${view.model}` : ''
   const labels = official ? TIER_LABEL : TIER_LABEL_GENERIC
-  const tierLabel = typeof view.tier === 'string' && view.tier in labels ? labels[view.tier] : '估算'
-  // 未命中价目表：金额是 flash 价兜底估算，明示出来不算错账
-  const estimateSuffix = view.priceMatched === false ? '（估算）' : ''
-  const tierText =
-    typeof view.model === 'string' && view.model !== ''
-      ? `${tierLabel} · ${view.model}${estimateSuffix}`
-      : `${tierLabel}${estimateSuffix}`
+  // 未命中价目表：金额是 flash 价兜底估算，明示出来不算错账；命中但无峰谷概念的是 const 一口价条目
+  const tierLabel =
+    view.priceMatched === false
+      ? `${typeof view.tier === 'string' && view.tier in labels ? labels[view.tier] : '估算'}（估算）`
+      : typeof view.tier === 'string' && view.tier in labels
+        ? labels[view.tier]
+        : '一口价'
+  const tierText = `${tierLabel}${modelSuffix}`
 
   // 计时级别的三块明细：每次API请求、轮、会话。每块是标题行加总额与总 token，下面缩进细列缓存命中、未命中、输出三行，各带 token 与金额。
   const detailRows = (o: { hitTok: number; missTok: number; outTok: number;

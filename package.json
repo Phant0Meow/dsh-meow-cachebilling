@@ -1,7 +1,7 @@
 {
   "name": "meow-cachebilling",
-  "version": "0.2.0",
-  "description": "喵账单：上下文圆环弹层里实时算账——当前每次API请求/当前轮/会话累计三块明细，缓存命中/未命中/输出各带 token 与金额，峰谷自动计价，第三方中转也认（估算计价），专治『缓存命中率 100% 却越用越贵』",
+  "version": "0.3.0",
+  "description": "喵账单：上下文圆环弹层里实时算账——当前每次API请求/当前轮/会话累计三块明细，缓存命中/未命中/输出各带 token 与金额，峰谷/一口价自动计价（价目表 rates.yml 可手填），专治『缓存命中率 100% 却越用越贵』",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -29,7 +29,8 @@
     "lib/index.js.map",
     "lib/client.js",
     "lib/client.js.map",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "rates.yml"
   ],
   "license": "MIT",
   "dsh": {
@@ -46,6 +47,7 @@
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
+    "yaml": "^2.9.0",
     "zod": "^4.4.3"
   }
 }

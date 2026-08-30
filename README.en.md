@@ -74,11 +74,12 @@ But it really does save money...
 
 ## Features
 
-- **Third-party relays welcome**: not limited to the official DeepSeek route — official routes price exactly off the rate card; any relay that reports usage gets billed too. Models on the rate card price off the card; unmatched ones estimate at flash rates with an "estimate" tag in the bill. Routes with no provider at all stay hidden.
+- **Third-party relays welcome**: not limited to the official DeepSeek route — official routes price exactly off the rate card; any relay that reports usage gets billed too. Models on the rate card price off the card (peak/valley or flat); unmatched ones estimate at flash rates with an "estimate" tag in the bill. Routes with no provider at all stay hidden.
+- **Hand-editable rate card**: `rates.yml` at the package root — provider/model exactly as the API reports them, peak/valley (days × ranges cross product) or flat `const`, timezone per provider billing zone (IANA name); restart `dsh web` to apply. Broken entries are skipped with a console warning — it can never crash DSH.
 - **The bill lives in the context menu**: click the context ring beside the composer and the bill sits at the bottom of its panel, right next to "how much context is used"
 - **Three timing tiers**: current API call / current turn (multi-call accumulation) / session total (with call count). Each tier is one header line with total tokens and cost, plus indented cache-hit, cache-miss and output lines with tokens and money
 - **Session total**: the whole session is priced call by call at each call's own peak/valley rate. Two per-call counters, both derived from the usage fields the API returns — "cache invalidations": the call reported cache-write tokens (a write means the prefix changed and the old cache was invalidated; the official API doesn't report this field, only some relays do); "full misses": the call had input but zero cache hit (derived from the reported hit count; a session's first call, with nothing to hit yet, counts too)
-- **Automatic peak/off-peak pricing**: weekday peak hours (Beijing time 09:00–12:00 / 14:00–18:00) bill at peak rates; all other hours plus Saturdays and Sundays bill at half-price valley rates — independent of your system timezone, computed purely from event time. The footer writes 梁文峰/梁文谷 on official DeepSeek routes, plain "peak/valley" elsewhere
+- **Automatic peak/off-peak pricing**: weekday peak hours (Beijing time 09:00–12:00 / 14:00–18:00) bill at peak rates; all other hours plus Saturdays and Sundays bill at half-price valley rates — independent of your system timezone, computed purely from event time. The footer writes 梁文峰/梁文谷 on official DeepSeek routes, plain "peak/valley" elsewhere, "flat rate" for const entries, and tags estimates explicitly
 - **Per-model pricing**: V4 Flash / V4 Pro / V4 Flash Vision Exp differ; each call is priced by the model that actually served it
 - **Readable amounts**: fixed decimals per tier — 4 for the current call, 3 for the turn, 2 for the session — trailing zeros kept, so even 0.0001 never reads as zero
 
@@ -108,13 +109,13 @@ Built-in price table (CNY per million tokens, official rate card of 2026-08-17):
 
 Data source: `usage.cacheReadTokens` (`prompt_cache_hit_tokens` in DeepSeek's API). This plugin is a local estimate; actual billing is up to your DeepSeek invoice.
 
-On third-party relays the rate card may differ — matched models estimate at the card price, unmatched ones at flash price. Still a local estimate; actual billing is up to your invoice.
+On third-party relays the rate card may differ — matched models estimate at the card price, unmatched ones at flash price. Still a local estimate; actual billing is up to your invoice. The editable rate card is `rates.yml` at the package root; the tables above are the built-in defaults.
 
 ## Notes
 
 - Official DeepSeek routes price exactly; third-party relays estimate, tagged as such when the model isn't on the rate card.
 - Calls without a reusable prefix honestly show a small miss cost — the first call of a fresh session has nothing to reuse yet.
-- If prices change, edit the price table in `src/index.ts` and rebuild.
+- The rate card lives in `rates.yml` at the package root — add your own models/APIs and restart `dsh web`. A broken file falls back to the built-in defaults with a console warning.
 
 ## Credits
 

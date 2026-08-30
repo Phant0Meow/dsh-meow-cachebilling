@@ -29,6 +29,10 @@ const hostOptions = {
   logLevel: 'info',
   // 保留 UTF-8 源码字符（默认 ascii 会把中文注释/字符串转成 \uXXXX，产物难读）
   charset: 'utf8',
+  // yaml 是 CJS：ESM 产物里的动态 require 需要真 require 兜底，否则报 "Dynamic require of ..."
+  banner: {
+    js: "import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);",
+  },
 };
 
 const clientOptions = {

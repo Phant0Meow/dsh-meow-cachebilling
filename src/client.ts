@@ -28,6 +28,7 @@ const CSS = `
 .meowcb_swatch{border-radius:2px;width:8px;height:8px;margin-right:6px;display:inline-block;flex:none}
 .meowcb_srows{margin:2px 0 0;padding:0 0 0 16px}
 .meowcb_foot{margin-top:6px;color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px}
+.meowcb_notice{color:#f59e0b;font-size:11px;line-height:16px}
 `
 
 /** 显示判定：默认全生效，不再按 provider 名过滤。任何 provider 只要报出用量，就按模型名匹配价目表显示估算金额，provider 为空时不显示。 */
@@ -176,13 +177,8 @@ function renderBill(bill: HTMLElement): void {
   const official = isOfficialDeepSeek(view.provider)
   const modelSuffix = typeof view.model === 'string' && view.model !== '' ? ` · ${view.model}` : ''
   const labels = official ? TIER_LABEL : TIER_LABEL_GENERIC
-  // 未命中价目表：金额是 flash 价兜底估算，明示出来不算错账；命中但无峰谷概念的是 const 一口价条目
-  const tierLabel =
-    view.priceMatched === false
-      ? `${typeof view.tier === 'string' && view.tier in labels ? labels[view.tier] : '估算'}（估算）`
-      : typeof view.tier === 'string' && view.tier in labels
-        ? labels[view.tier]
-        : '一口价'
+  // 命中价目表：tier 标签（峰谷/一口价）；未命中：金额是 flash 价兜底估算——明示责任交给块 1 上方的醒目提示行，底部不再标（估算）
+  const tierLabel = typeof view.tier === 'string' && view.tier in labels ? labels[view.tier] : '一口价'
   const tierText = `${tierLabel}${modelSuffix}`
 
   // 计时级别的三块明细：每次API请求、轮、会话。每块是标题行加总额与总 token，下面缩进细列缓存命中、未命中、输出三行，各带 token 与金额。
@@ -217,7 +213,14 @@ function renderBill(bill: HTMLElement): void {
     return rows
   }
 
-  // 块 1：当前每次API请求，单次调用
+  // 块 1：当前每次API请求，单次调用。未命中价目表时在块前放醒目提示行：金额是 flash 价估算，不能穿着精确数据的外衣
+  if (view.priceMatched === false) {
+    const notice = doc.createElement('div')
+    notice.className = 'meowcb_notice'
+    notice.textContent =
+      '［喵缓存账单］当前模型无价格数据，请去设置界面添加。以下为Deepseek价格，仅供参考：'
+    put(notice)
+  }
   const stepIn = Number(view.totalInputTokens ?? 0)
   const stepHitTok = Number(view.cacheReadTokens ?? 0)
   const stepMissTok = Math.max(0, stepIn - stepHitTok)
@@ -379,7 +382,7 @@ export const inject = ['slots', 'connection', 'remote', 'settingsScope', 'settin
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any): void {
   // 版本标记：排障用，每次改动 bump——rev 滞后时看控制台标记就知道浏览器跑的是哪一版
-  console.log('[meow-cachebilling] client bundle: settings-ui-2')
+  console.log('[meow-cachebilling] client bundle: settings-ui-6')
   if (
     typeof document !== 'undefined' &&
     document.querySelector(`style[data-plugin-css="${CSS_ID}"]`) === null

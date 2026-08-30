@@ -28,10 +28,14 @@ const CSS = `
 .meowcb_set_badge_custom{background:color-mix(in srgb,#34d399 18%,transparent);color:#34d399}
 .meowcb_set_editor{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;display:flex;flex-direction:column;gap:8px;padding:12px}
 .meowcb_set_line{align-items:center;display:flex;gap:8px;flex-wrap:wrap}
-.meowcb_set_label{color:var(--dsw-alias-label-secondary);font-size:12px;min-width:72px}
+.meowcb_set_label{color:var(--dsw-alias-label-secondary);font-size:12px;flex:none}
 .meowcb_set_input{background:transparent;border:1px solid var(--dsw-alias-border-l3);border-radius:6px;color:inherit;font-size:13px;padding:4px 8px}
-.meowcb_set_input_num{width:96px}
-.meowcb_set_input_time{flex:1;min-width:240px;font-family:ui-monospace,monospace}
+.meowcb_set_input_num{width:64px}
+.meowcb_set_input_time{flex:1;min-width:200px;font-family:ui-monospace,monospace}
+.meowcb_set_input_grow{flex:1;min-width:80px}
+.meowcb_set_input_save{width:112px}
+.meowcb_set_price{align-items:center;display:flex;gap:4px;flex:none}
+.meowcb_set_check{align-items:center;cursor:pointer;display:flex;gap:4px;flex:none}
 .meowcb_set_input_err{border-color:#f43f5e}
 .meowcb_set_err{color:#f43f5e;font-size:12px;line-height:1.5;margin:0;white-space:pre-wrap}
 .meowcb_set_actions{display:flex;gap:8px;margin-top:2px}
@@ -71,6 +75,8 @@ const PROVIDER_TIMEZONE: Record<string, string> = {
   'deepseek-official': 'Asia/Shanghai',
   deepseek: 'Asia/Shanghai',
   zhipu: 'Asia/Shanghai',
+  'zai-coding-cn': 'Asia/Shanghai',
+  zai: 'Asia/Shanghai',
   bigmodel: 'Asia/Shanghai',
   siliconflow: 'Asia/Shanghai',
   moonshot: 'Asia/Shanghai',
@@ -190,16 +196,16 @@ const emptyDraft = (): Draft => ({
   cacheSaving: '',
 })
 
-/** 保存前校验：返回错误文案或 null。价格必须是非负数字；峰谷必须配齐时间。 */
+/** 保存前校验：返回错误文案或 null。价格必须是非负数字；峰谷必须配齐时间与时区（一口价不需要时区）。 */
 function validateDraft(d: Draft): string | null {
-  if (!d.model.trim()) return 'model 不能为空'
-  if (!d.timezone.trim()) return 'timezone 不能为空（选一个 provider 自动带出，或手动填 IANA 名）'
+  if (!d.model.trim()) return '模型不能为空'
   const numOk = (v: string): boolean => v.trim() !== '' && Number.isFinite(toNum(v)) && toNum(v) >= 0
   const partOk = (hit: string, miss: string, output: string): string | null => {
     if (!numOk(hit) || !numOk(miss) || !numOk(output)) return '价格必须是非负数字（元 / 百万 token）'
     return null
   }
   if (d.isPeak) {
+    if (!d.timezone.trim()) return '时区不能为空（内置供应商会自动带出，其余填 IANA 名）'
     try {
       parseWhenText(d.whenText)
     } catch (e) {
@@ -214,7 +220,8 @@ function buildEntry(d: Draft): UserEntry {
   const e: UserEntry = { model: d.model.trim() }
   const provider = d.provider.trim().toLowerCase()
   if (provider) e.provider = provider
-  e.timezone = d.timezone.trim()
+  // 时区只在峰谷条目上有意义（一口价不判峰谷，host 侧缺省 Asia/Shanghai）
+  if (d.isPeak) e.timezone = d.timezone.trim()
   const part = (hit: string, miss: string, output: string): PricePart => {
     const p: PricePart = { hit: toNum(hit), miss: toNum(miss), output: toNum(output) }
     return p
@@ -233,48 +240,31 @@ function buildEntry(d: Draft): UserEntry {
 
 const el = React.createElement
 
-function Field(props: { label: string; children: React.ReactNode }): any {
-  return el(
-    'div',
-    { className: 'meowcb_set_line' },
-    el('span', { className: 'meowcb_set_label' }, props.label),
-    props.children,
-  )
-}
-
 function PriceInputs(props: { d: Draft; set: (patch: Partial<Draft>) => void; mode: 'flat' | 'peak' | 'valley' }): any {
   const { d, set, mode } = props
   const key = (k: keyof Draft): keyof Draft => k
   const hit = mode === 'flat' ? key('flatHit') : mode === 'peak' ? key('peakHit') : key('valleyHit')
   const miss = mode === 'flat' ? key('flatMiss') : mode === 'peak' ? key('peakMiss') : key('valleyMiss')
   const output = mode === 'flat' ? key('flatOutput') : mode === 'peak' ? key('peakOutput') : key('valleyOutput')
+  const cell = (labelText: string, k: keyof Draft): any =>
+    el(
+      'span',
+      { className: 'meowcb_set_price' },
+      el('span', { className: 'meowcb_set_label' }, labelText),
+      el('input', {
+        className: 'meowcb_set_input meowcb_set_input_num',
+        value: d[k] as string,
+        onChange: (e: any) => set({ [k]: e.target.value } as Partial<Draft>),
+        inputMode: 'decimal',
+        placeholder: '元/百万',
+      }),
+    )
   return el(
     'div',
     { className: 'meowcb_set_line' },
-    el('span', { className: 'meowcb_set_label' }, '缓存命中'),
-    el('input', {
-      className: 'meowcb_set_input meowcb_set_input_num',
-      value: props.d[hit] as string,
-      onChange: (e: any) => props.set({ [hit]: e.target.value } as Partial<Draft>),
-      inputMode: 'decimal',
-      placeholder: '元/百万',
-    }),
-    el('span', { className: 'meowcb_set_label' }, '缓存未命中'),
-    el('input', {
-      className: 'meowcb_set_input meowcb_set_input_num',
-      value: props.d[miss] as string,
-      onChange: (e: any) => props.set({ [miss]: e.target.value } as Partial<Draft>),
-      inputMode: 'decimal',
-      placeholder: '元/百万',
-    }),
-    el('span', { className: 'meowcb_set_label' }, '输出'),
-    el('input', {
-      className: 'meowcb_set_input meowcb_set_input_num',
-      value: props.d[output] as string,
-      onChange: (e: any) => props.set({ [output]: e.target.value } as Partial<Draft>),
-      inputMode: 'decimal',
-      placeholder: '元/百万',
-    }),
+    cell('缓存命中', hit),
+    cell('缓存未命中', miss),
+    cell('输出', output),
   )
 }
 
@@ -381,61 +371,48 @@ function BillingCard(props: { scope: any }): any {
       : el(
           'div',
           { className: 'meowcb_set_editor' },
+          // 第一行：供应商 + 模型 + 峰谷开关
           el(
-            Field,
-            { label: 'provider' },
+            'div',
+            { className: 'meowcb_set_line' },
+            el('span', { className: 'meowcb_set_label' }, '供应商'),
             el('input', {
-              className: 'meowcb_set_input',
+              className: 'meowcb_set_input meowcb_set_input_grow',
               value: draft.provider,
               onChange: (e: any) => {
                 const provider = e.target.value
                 const known = PROVIDER_TIMEZONE[provider.trim().toLowerCase()]
                 set(known ? { provider, timezone: known } : { provider })
               },
-              placeholder: '如 deepseek-official / openrouter（留空 = 通配）',
+              placeholder: 'deepseek-official / openrouter，留空=通配',
             }),
-            el('span', { className: 'meowcb_set_muted' }, '留空 = 对该模型所有路由生效'),
-          ),
-          el(
-            Field,
-            { label: 'model' },
+            el('span', { className: 'meowcb_set_label' }, '模型'),
             el('input', {
-              className: 'meowcb_set_input',
+              className: 'meowcb_set_input meowcb_set_input_grow',
               value: draft.model,
               onChange: (e: any) => set({ model: e.target.value }),
-              placeholder: '与 API 返回写法一致，如 glm-5.3-flash',
+              placeholder: 'glm-5.3-flash',
             }),
-          ),
-          el(
-            Field,
-            { label: '时区' },
-            tzFor(draft.provider).auto
-              ? el('span', { className: 'meowcb_set_muted' }, `自动（计费方账单时区）：${tzFor(draft.provider).tz}`)
-              : el('input', {
-                  className: 'meowcb_set_input' + (draft.timezone.trim() ? '' : ' meowcb_set_input_err'),
-                  value: draft.timezone,
-                  onChange: (e: any) => set({ timezone: e.target.value }),
-                  placeholder: 'IANA 名，如 Asia/Shanghai / America/New_York',
-                }),
-          ),
-          el(
-            'label',
-            { className: 'meowcb_set_line', style: { cursor: 'pointer' } },
-            el('input', {
-              type: 'checkbox',
-              checked: draft.isPeak,
-              onChange: (e: any) => set({ isPeak: e.target.checked }),
-            }),
-            el('span', null, '是峰谷价（不勾 = 24 小时一口价）'),
+            el(
+              'label',
+              { className: 'meowcb_set_check' },
+              el('input', {
+                type: 'checkbox',
+                checked: draft.isPeak,
+                onChange: (e: any) => set({ isPeak: e.target.checked }),
+              }),
+              el('span', null, '是峰谷价'),
+            ),
           ),
           draft.isPeak
             ? el(
                 'div',
                 { className: 'meowcb_set_editor' },
-                el('div', { className: 'meowcb_set_section' }, '峰价'),
+                // 峰价 + 时间同行；时区仅供应商不在内置表时出现
                 el(
-                  Field,
-                  { label: '时间' },
+                  'div',
+                  { className: 'meowcb_set_line' },
+                  el('span', { className: 'meowcb_set_label' }, '峰价'),
                   el('input', {
                     className:
                       'meowcb_set_input meowcb_set_input_time' +
@@ -444,26 +421,25 @@ function BillingCard(props: { scope: any }): any {
                     onChange: (e: any) => set({ whenText: e.target.value }),
                     placeholder: '[mon-fri][09:00-12:00, 14:00-18:00]，多组用 + 连接',
                   }),
+                  tzFor(draft.provider).auto
+                    ? null
+                    : el(
+                        'span',
+                        { className: 'meowcb_set_price' },
+                        el('span', { className: 'meowcb_set_label' }, '时区'),
+                        el('input', {
+                          className: 'meowcb_set_input meowcb_set_input_save' + (draft.timezone.trim() ? '' : ' meowcb_set_input_err'),
+                          value: draft.timezone,
+                          onChange: (e: any) => set({ timezone: e.target.value }),
+                          placeholder: 'Asia/Shanghai',
+                        }),
+                      ),
                 ),
                 el(PriceInputs, { d: draft, set, mode: 'peak' }),
-                el('div', { className: 'meowcb_set_section' }, '谷价（时段自动取峰的补集，含周末全天谷）'),
+                el('div', { className: 'meowcb_set_section' }, '谷价'),
                 el(PriceInputs, { d: draft, set, mode: 'valley' }),
               )
-            : el(
-                'div',
-                { className: 'meowcb_set_editor' },
-                el(PriceInputs, { d: draft, set, mode: 'flat' }),
-              ),
-          el(
-            Field,
-            { label: 'cacheSaving' },
-            el('input', {
-              className: 'meowcb_set_input',
-              value: draft.cacheSaving,
-              onChange: (e: any) => set({ cacheSaving: e.target.value }),
-              placeholder: '服务器缓存保留时长（实测后回填，现在没有逻辑）',
-            }),
-          ),
+            : el(PriceInputs, { d: draft, set, mode: 'flat' }),
           error ? el('div', { className: 'meowcb_set_err' }, error) : null,
           el(
             'div',
@@ -504,7 +480,7 @@ function BillingCard(props: { scope: any }): any {
             className: 'meowcb_set_row',
             onClick: () => open(key),
           },
-          el('span', null, `${entry.provider ?? '*'} / ${entry.model}${tier}`),
+          el('span', null, `${entry.provider ?? '全部路由'} / ${entry.model}${tier}`),
           badge,
         )
   })

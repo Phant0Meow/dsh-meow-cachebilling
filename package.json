@@ -43,10 +43,11 @@
     }
   },
   "scripts": {
+    "prepare": "node build.mjs",
     "build": "node build.mjs",
     "watch": "node build.mjs --watch"
   },
-  "devDependencies": {
+  "dependencies": {
     "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1",
     "esbuild": "^0.25.0",

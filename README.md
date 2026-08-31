@@ -104,10 +104,20 @@ AI需要重读代码的miss输入（可以通过fork减少这项成本）。
 ## 安装
 
 ```sh
-dsh plugin --profile web add meow-cachebilling
+dsh plugin --profile web add github:Phant0Meow/dsh-meow-cachebilling
 ```
 
-安装后重启 `dsh web` 即可，无需任何配置。
+一条命令装完即生效：安装时自动编译（包内含 `prepare` 脚本），自动挂载，重启 `dsh web` 后启用，无需任何配置。
+
+> pnpm ≥10 默认会阻止安装期的构建脚本：首次 `add` 可能失败并提示 `allowBuilds`，按提示把输出的键加进 profile 的 `pnpm-workspace.yaml` 后重跑即可。
+
+## 卸载
+
+```sh
+dsh plugin --profile web remove meow-cachebilling
+```
+
+彻底移除，重启 `dsh web` 后不再加载。
 
 ## 计价口径
 

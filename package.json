@@ -1,7 +1,7 @@
 {
   "name": "meow-cachebilling",
-  "version": "0.4.1",
-  "description": "喵账单：上下文圆环弹层里实时算账——当前每次API请求/当前轮/会话累计三块明细，缓存命中/未命中/输出各带 token 与金额，峰谷/一口价自动计价（价目表 rates.yml 可手填），专治『缓存命中率 100% 却越用越贵』",
+  "version": "0.6.0",
+  "description": "喵账单：上下文圆环弹层里实时算账——一步/一轮/会话三行各带总价，缓存命中/未命中/输出三列明细的无边框小账表，外加当前模型的平均累计花费曲线（帮你赶在花销起飞前换窗口），峰谷/一口价自动计价（价目表 rates.yml 可手填），专治『缓存命中率 100% 却越用越贵』",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -49,6 +49,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "^0.1.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1",
     "esbuild": "^0.25.0",
     "yaml": "^2.9.0",

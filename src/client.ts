@@ -15,20 +15,31 @@ import { applySettings } from './settings'
 /** 样式注入标识（防重复注入）。 */
 const CSS_ID = 'meow-cachebilling-css'
 
-/** 账单区块样式：排版语言复刻官方弹层，顶部细分隔线与官方 rows 区隔。 */
+/** 账单区块样式：排版语言复刻官方弹层，顶部细分隔线与官方 rows 区隔。账表用无边框 CSS grid——等宽列加金额右对齐，天然成表不画线。 */
 const CSS = `
 .meowcb_bill{margin-top:8px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l3)}
-.meowcb_billhead{align-items:center;gap:6px;display:flex;color:var(--dsw-alias-label-secondary)}
-.meowcb_billtotal{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);margin-left:auto;font-weight:500}
-.meowcb_bilrows{margin:4px 0 0;padding:0}
-.meowcb_bilrow{justify-content:space-between;align-items:center;gap:12px;padding:2px 0;display:flex}
-.meowcb_bilrow dt{display:flex;align-items:center;color:var(--dsw-alias-label-secondary);margin:0}
-.meowcb_bilrow dd{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);margin:0;font-weight:500;text-align:right}
-.meowcb_tok{color:var(--dsw-alias-label-caption);font-weight:400;margin-left:4px}
+.meowcb_grid{display:grid;grid-template-columns:max-content 1fr 1fr 1fr;column-gap:10px;row-gap:2px;margin-top:4px;align-items:baseline}
+.meowcb_lab{color:var(--dsw-alias-label-secondary);font-weight:400;white-space:nowrap}
+.meowcb_t{color:var(--dsw-alias-label-primary);font-weight:500;font-variant-numeric:tabular-nums}
+.meowcb_h{color:var(--dsw-alias-label-secondary);font-weight:400;text-align:right;white-space:nowrap}
+.meowcb_v{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary);font-weight:500;text-align:right}
 .meowcb_swatch{border-radius:2px;width:8px;height:8px;margin-right:6px;display:inline-block;flex:none}
-.meowcb_srows{margin:2px 0 0;padding:0 0 0 16px}
+.meowcb_stat{display:flex;align-items:center;margin-top:4px;color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px}
 .meowcb_foot{margin-top:6px;color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px}
 .meowcb_notice{color:#f59e0b;font-size:11px;line-height:16px}
+.meowcb_chart{margin-top:8px}
+.meowcb_charthead{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}
+.meowcb_svg{display:block;width:100%;height:auto}
+.meowcb_axis{stroke:var(--dsw-alias-border-l3);stroke-width:1}
+.meowcb_avg{stroke:#60a5fa;stroke-width:1.5;fill:none}
+.meowcb_cur{stroke:#f59e0b;stroke-width:1.5;fill:none}
+.meowcb_dotavg{fill:#60a5fa}
+.meowcb_dotcur{fill:#f59e0b}
+.meowcb_axlabel{fill:var(--dsw-alias-label-caption);font-size:9px}
+.meowcb_legend{display:flex;gap:12px;align-items:center;margin-top:2px;color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px}
+.meowcb_sw{display:inline-block;width:10px;height:2px;margin-right:4px;vertical-align:middle}
+.meowcb_sw-avg{background:#60a5fa}
+.meowcb_sw-cur{background:#f59e0b}
 `
 
 /** 显示判定：默认全生效，不再按 provider 名过滤。任何 provider 只要报出用量，就按模型名匹配价目表显示估算金额，provider 为空时不显示。 */
@@ -36,20 +47,19 @@ function isBillableProvider(provider: unknown): boolean {
   return typeof provider === 'string' && provider !== ''
 }
 
-/** 金额格式化，无货币符号，按级别固定小数位，会话 2 位、轮 3 位、每次API请求 4 位，尾 0 不省略，超出精度的尾数四舍五入。 */
-function formatAmount(amount: number, digits: number): string {
+/** 金额格式化，无货币符号：小于 0.01 四舍五入保留一位有效数字（0.0047→0.005，0.0003 依稀可辨），大于等于 0.01 四舍五入到分，0 恒显示 0。 */
+function formatAmount(amount: number): string {
   if (!Number.isFinite(amount) || amount <= 0) return '0'
-  return amount.toFixed(digits)
-}
-
-/** token 数紧凑格式：812 / 12.2K / 1.2M。 */
-function formatTokens(n: number): string {
-  const scaled = (v: number): string =>
-    v >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10)
-  if (!Number.isFinite(n) || n <= 0) return '0'
-  if (n < 1000) return String(Math.round(n))
-  if (n < 1_000_000) return `${scaled(n / 1000)}K`
-  return `${scaled(n / 1_000_000)}M`
+  if (amount >= 0.01) return amount.toFixed(2)
+  // 一位有效数字：数量级 exp + 首位 sig，四舍五入进位到 10 时升一级数量级（0.0096 → 0.01）
+  let exp = Math.floor(Math.log10(amount))
+  let sig = Math.round(amount / Math.pow(10, exp))
+  if (sig >= 10) {
+    exp += 1
+    sig = 1
+  }
+  const value = sig * Math.pow(10, exp)
+  return value >= 0.01 ? value.toFixed(2) : value.toFixed(-exp)
 }
 
 const TIER_LABEL: Record<string, string> = {
@@ -75,35 +85,25 @@ interface CacheBillingView {
   missCost?: number
   outputCost?: number
   currency?: string
-  cacheReadTokens?: number
-  totalInputTokens?: number
-  hitRate?: number | null
   model?: string | null
   provider?: string | null
   tier?: string | null
-  unitPricePerM?: number | null
   priceMatched?: boolean
-  turn?: number | null
-  step?: number | null
-  sessionCacheHitCost?: number
-  sessionMissCost?: number
-  sessionOutputCost?: number
-  sessionInputTokens?: number
-  sessionCacheReadTokens?: number
-  sessionOutputTokens?: number
-  sessionRounds?: number
   sessionMissSteps?: number
-  sessionWriteTokens?: number
   sessionFullMissSteps?: number
-  turnCost?: number
   turnHitCost?: number
   turnMissCost?: number
   turnOutputCost?: number
-  turnTokens?: number
-  turnCacheReadTokens?: number
-  turnInputTokens?: number
-  turnOutputTokens?: number
-  outputTokens?: number
+  sessionCacheHitCost?: number
+  sessionMissCost?: number
+  sessionOutputCost?: number
+  /** 曲线块（第二块）：null = 当前模型未命中价目表（估算步不入曲线） */
+  curve?: {
+    key: string
+    sessions: number
+    avg: number[]
+    cur: Array<[number, number]>
+  } | null
 }
 
 /** 模块级投影镜像：React hook 侧写入，命令式贴装侧读取。 */
@@ -115,34 +115,6 @@ function isContextPanel(node: Node): node is HTMLElement {
   if (node.getAttribute('role') !== 'dialog') return false
   const label = node.getAttribute('aria-label') ?? ''
   return /of context used|上下文已用/i.test(label)
-}
-
-/** 单条账单行：色块加标签附 token 数，负数省略，右对齐金额。 */
-function buildRow(doc: Document, o: {
-  color: string
-  label: string
-  tokens: number
-  amountText: string
-}): HTMLDivElement {
-  const row = doc.createElement('div')
-  row.className = 'meowcb_bilrow'
-  const dt = doc.createElement('dt')
-  const swatch = doc.createElement('span')
-  swatch.className = 'meowcb_swatch'
-  swatch.style.background = o.color
-  dt.appendChild(swatch)
-  dt.appendChild(doc.createTextNode(o.label))
-  if (o.tokens >= 0) {
-    const tok = doc.createElement('span')
-    tok.className = 'meowcb_tok'
-    tok.textContent = `${formatTokens(o.tokens)} tok`
-    dt.appendChild(tok)
-  }
-  const dd = doc.createElement('dd')
-  dd.textContent = o.amountText
-  row.appendChild(dt)
-  row.appendChild(dd)
-  return row
 }
 
 /** 用最新投影刷新账单区块内容，区块骨架已在贴装时建好。 */
@@ -172,7 +144,6 @@ function renderBill(bill: HTMLElement): void {
   const cost = Number.isFinite(view.cost) ? (view.cost as number) : 0
   const missCost = Number.isFinite(view.missCost) ? (view.missCost as number) : 0
   const outputCost = Number.isFinite(view.outputCost) ? (view.outputCost as number) : 0
-  const total = cost + missCost + outputCost
   const symbol = view.currency === 'USD' ? '$' : '¥'
   const official = isOfficialDeepSeek(view.provider)
   const modelSuffix = typeof view.model === 'string' && view.model !== '' ? ` · ${view.model}` : ''
@@ -181,39 +152,7 @@ function renderBill(bill: HTMLElement): void {
   const tierLabel = typeof view.tier === 'string' && view.tier in labels ? labels[view.tier] : '一口价'
   const tierText = `${tierLabel}${modelSuffix}`
 
-  // 计时级别的三块明细：每次API请求、轮、会话。每块是标题行加总额与总 token，下面缩进细列缓存命中、未命中、输出三行，各带 token 与金额。
-  const detailRows = (o: { hitTok: number; missTok: number; outTok: number;
-    hit: number; miss: number; out: number; digits: number }): HTMLDivElement => {
-    const rows = doc.createElement('div')
-    rows.className = 'meowcb_srows'
-    rows.appendChild(
-      buildRow(doc, {
-        color: '#34d399',
-        label: '缓存命中',
-        tokens: o.hitTok,
-        amountText: `${symbol}${formatAmount(o.hit, o.digits)}`,
-      }),
-    )
-    rows.appendChild(
-      buildRow(doc, {
-        color: '#f59e0b',
-        label: '缓存未命中',
-        tokens: o.missTok,
-        amountText: `${symbol}${formatAmount(o.miss, o.digits)}`,
-      }),
-    )
-    rows.appendChild(
-      buildRow(doc, {
-        color: '#60a5fa',
-        label: '输出',
-        tokens: o.outTok,
-        amountText: `${symbol}${formatAmount(o.out, o.digits)}`,
-      }),
-    )
-    return rows
-  }
-
-  // 块 1：当前每次API请求，单次调用。未命中价目表时在块前放醒目提示行：金额是 flash 价估算，不能穿着精确数据的外衣
+  // 未命中价目表的醒目提示行仍在表上方：金额是 flash 价估算，不能穿着精确数据的外衣
   if (view.priceMatched === false) {
     const notice = doc.createElement('div')
     notice.className = 'meowcb_notice'
@@ -221,92 +160,177 @@ function renderBill(bill: HTMLElement): void {
       '［喵缓存账单］当前模型无价格数据，请去设置界面添加。以下为Deepseek价格，仅供参考：'
     put(notice)
   }
-  const stepIn = Number(view.totalInputTokens ?? 0)
-  const stepHitTok = Number(view.cacheReadTokens ?? 0)
-  const stepMissTok = Math.max(0, stepIn - stepHitTok)
-  const stepOutTok = Number(view.outputTokens ?? 0)
-  put(
-    buildRow(doc, {
-      color: '#a78bfa',
-      label: '当前每次API请求',
-      tokens: stepIn + stepOutTok,
-      amountText: `${symbol}${formatAmount(total, 4)}`,
-    }),
-  )
-  put(detailRows({ hitTok: stepHitTok, missTok: stepMissTok, outTok: stepOutTok,
-    hit: cost, miss: missCost, out: outputCost, digits: 4 }))
 
-  // 块 2：当前轮，turn 内多步累计
-  const turnCost = Number.isFinite(view.turnCost) ? (view.turnCost as number) : 0
+  // 账表：首列=行标签加该级总价（中间一个空格，货币单位只在表头标一次），右边三列=缓存命中/缓存未命中/输出明细。无边框 grid，金额右对齐，天然对齐不画线。
+  const grid = doc.createElement('div')
+  grid.className = 'meowcb_grid'
+  const cell = (className: string, text: string): void => {
+    const el = doc.createElement('div')
+    el.className = className
+    el.textContent = text
+    grid.appendChild(el)
+  }
+  cell('meowcb_lab', `当前 总价(${symbol})`)
+  cell('meowcb_h', '缓存命中')
+  cell('meowcb_h', '缓存未命中')
+  cell('meowcb_h', '输出')
+  const tableRow = (label: string, hit: number, miss: number, out: number): void => {
+    const lab = doc.createElement('div')
+    lab.className = 'meowcb_lab'
+    lab.appendChild(doc.createTextNode(label))
+    lab.appendChild(doc.createTextNode(' '))
+    const t = doc.createElement('span')
+    t.className = 'meowcb_t'
+    t.textContent = formatAmount(hit + miss + out)
+    lab.appendChild(t)
+    grid.appendChild(lab)
+    cell('meowcb_v', formatAmount(hit))
+    cell('meowcb_v', formatAmount(miss))
+    cell('meowcb_v', formatAmount(out))
+  }
+  tableRow('一步', cost, missCost, outputCost)
+
+  // 一轮：turn 内多步累计
   const turnHit = Number.isFinite(view.turnHitCost) ? (view.turnHitCost as number) : 0
   const turnMiss = Number.isFinite(view.turnMissCost) ? (view.turnMissCost as number) : 0
   const turnOut = Number.isFinite(view.turnOutputCost) ? (view.turnOutputCost as number) : 0
-  const turnIn = Number(view.turnInputTokens ?? 0)
-  const turnHitTok = Number(view.turnCacheReadTokens ?? 0)
-  const turnOutTok = Number(view.turnOutputTokens ?? 0)
-  put(
-    buildRow(doc, {
-      color: '#22d3ee',
-      label: '当前轮',
-      tokens: turnIn + turnOutTok,
-      amountText: `${symbol}${formatAmount(turnCost, 3)}`,
-    }),
-  )
-  put(detailRows({ hitTok: turnHitTok, missTok: Math.max(0, turnIn - turnHitTok),
-    outTok: turnOutTok, hit: turnHit, miss: turnMiss, out: turnOut, digits: 3 }))
+  tableRow('一轮', turnHit, turnMiss, turnOut)
 
-  // 块 3：会话累计
+  // 会话累计
   const sessionHit = Number.isFinite(view.sessionCacheHitCost) ? (view.sessionCacheHitCost as number) : 0
   const sessionMiss = Number.isFinite(view.sessionMissCost) ? (view.sessionMissCost as number) : 0
   const sessionOut = Number.isFinite(view.sessionOutputCost) ? (view.sessionOutputCost as number) : 0
-  const sessionRounds = Number.isFinite(view.sessionRounds) ? (view.sessionRounds as number) : 0
-  const sessionIn = Number(view.sessionInputTokens ?? 0)
-  const sessionHitTok = Number(view.sessionCacheReadTokens ?? 0)
-  const sessionOutTok = Number(view.sessionOutputTokens ?? 0)
-  put(
-    buildRow(doc, {
-      color: '#f472b6',
-      label: sessionRounds > 0 ? `会话累计 · ${sessionRounds} 次` : '会话累计',
-      tokens: sessionIn + sessionOutTok,
-      amountText: `${symbol}${formatAmount(sessionHit + sessionMiss + sessionOut, 2)}`,
-    }),
-  )
-  const srows = detailRows({ hitTok: sessionHitTok,
-    missTok: Math.max(0, sessionIn - sessionHitTok), outTok: sessionOutTok,
-    hit: sessionHit, miss: sessionMiss, out: sessionOut, digits: 2 })
-  // 缓存失效统计：写入即失效，仅部分中转报值；完全失效，任何路由可靠
+  tableRow('会话', sessionHit, sessionMiss, sessionOut)
+  put(grid)
+
+  // 缓存失效统计：写入即失效，仅部分中转报值；完全失效，任何路由可靠。小字状态行放表下，仅发生时出现。
   const missSteps = Number.isFinite(view.sessionMissSteps) ? (view.sessionMissSteps as number) : 0
-  const writeTokens = Number.isFinite(view.sessionWriteTokens) ? (view.sessionWriteTokens as number) : 0
   const fullMissSteps = Number.isFinite(view.sessionFullMissSteps)
     ? (view.sessionFullMissSteps as number)
     : 0
-  if (missSteps > 0) {
-    srows.appendChild(
-      buildRow(doc, {
-        color: '#fb7185',
-        label: `缓存失效 ${missSteps} 次`,
-        tokens: writeTokens > 0 ? writeTokens : -1,
-        amountText: '',
-      }),
-    )
+  const statRow = (color: string, text: string): void => {
+    const el = doc.createElement('div')
+    el.className = 'meowcb_stat'
+    const swatch = doc.createElement('span')
+    swatch.className = 'meowcb_swatch'
+    swatch.style.background = color
+    el.appendChild(swatch)
+    el.appendChild(doc.createTextNode(text))
+    put(el)
   }
-  if (fullMissSteps > 0) {
-    srows.appendChild(
-      buildRow(doc, {
-        color: '#f43f5e',
-        label: `完全失效 ${fullMissSteps} 次`,
-        tokens: -1,
-        amountText: '',
-      }),
-    )
-  }
-  put(srows)
+  if (missSteps > 0) statRow('#fb7185', `缓存失效 ${missSteps} 次`)
+  if (fullMissSteps > 0) statRow('#f43f5e', `完全失效 ${fullMissSteps} 次`)
 
   // 底部小字只保留峰谷价标注附模型名，轮次、模型、命中率与网页最下方统计行重复，用户反馈砍掉。
   const foot = doc.createElement('div')
   foot.className = 'meowcb_foot'
   foot.textContent = tierText
   put(foot)
+
+  // 块 2：平均累计花费曲线——平均看「这种模型这种价通常怎么涨」，本会话看「我现在实际怎么涨」，对照斜率赶在起飞前换窗。
+  renderCurve(doc, put, view)
+}
+
+/** 块 2：平均累计花费曲线。手写 SVG——L 形极简坐标轴（无边线的延续）+ 平均/本会话两条折线 + 端点圆点。 */
+function renderCurve(doc: Document, put: (el: HTMLElement) => void, view: CacheBillingView): void {
+  const curve = view.curve
+  if (!curve) return
+  const tierLabel = view.tier === 'peak' ? '峰价' : view.tier === 'offPeak' ? '谷价' : '一口价'
+  const heading = doc.createElement('div')
+  heading.className = 'meowcb_charthead'
+  heading.textContent = `对于 ${view.model ?? '当前模型'}（${tierLabel}）：`
+  put(heading)
+
+  const W = 280
+  const H = 110
+  const L = 40
+  const R = 10
+  const T = 10
+  const B = 18
+  const lastCurN = curve.cur.length > 0 ? curve.cur[curve.cur.length - 1][0] : 0
+  const xmax = Math.max(curve.avg.length, lastCurN, 1)
+  let ymax = 0
+  for (const v of curve.avg) if (v > ymax) ymax = v
+  for (const [, v] of curve.cur) if (v > ymax) ymax = v
+  if (ymax <= 0) ymax = 1
+  const x = (n: number): number => L + ((n - 1) / Math.max(xmax - 1, 1)) * (W - L - R)
+  const y = (v: number): number => H - B - (v / ymax) * (H - B - T)
+  const NS = 'http://www.w3.org/2000/svg'
+  const el = (tag: string, cls: string): SVGElement => {
+    const node = doc.createElementNS(NS, tag)
+    node.setAttribute('class', cls)
+    return node as unknown as SVGElement
+  }
+
+  const svg = el('svg', 'meowcb_svg')
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`)
+  // L 形坐标轴：左纵 + 下横，无边框美学的极简延续
+  const axisY = el('line', 'meowcb_axis')
+  axisY.setAttribute('x1', String(L))
+  axisY.setAttribute('y1', String(T))
+  axisY.setAttribute('x2', String(L))
+  axisY.setAttribute('y2', String(H - B))
+  const axisX = el('line', 'meowcb_axis')
+  axisX.setAttribute('x1', String(L))
+  axisX.setAttribute('y1', String(H - B))
+  axisX.setAttribute('x2', String(W - R))
+  axisX.setAttribute('y2', String(H - B))
+  svg.appendChild(axisY)
+  svg.appendChild(axisX)
+
+  // 平均累计曲线（步 1..N 稠密）
+  if (curve.avg.length > 0) {
+    const line = el('polyline', 'meowcb_avg')
+    line.setAttribute('points', curve.avg.map((v, i) => `${x(i + 1)},${y(v)}`).join(' '))
+    svg.appendChild(line)
+    const dot = el('circle', 'meowcb_dotavg')
+    dot.setAttribute('cx', String(x(curve.avg.length)))
+    dot.setAttribute('cy', String(y(curve.avg[curve.avg.length - 1])))
+    dot.setAttribute('r', '2')
+    svg.appendChild(dot)
+  }
+
+  // 本会话实际累计曲线（全部精确步，x 落在真实调用序号上，混模型也如实）
+  if (curve.cur.length > 0) {
+    const line = el('polyline', 'meowcb_cur')
+    line.setAttribute('points', curve.cur.map(([n, v]) => `${x(n)},${y(v)}`).join(' '))
+    svg.appendChild(line)
+    const dot = el('circle', 'meowcb_dotcur')
+    dot.setAttribute('cx', String(x(curve.cur[curve.cur.length - 1][0])))
+    dot.setAttribute('cy', String(y(curve.cur[curve.cur.length - 1][1])))
+    dot.setAttribute('r', '2')
+    svg.appendChild(dot)
+  }
+
+  // 轴端标注：左上 Y 上限，右下 X 总步数
+  const yLabel = el('text', 'meowcb_axlabel')
+  yLabel.setAttribute('x', String(L + 4))
+  yLabel.setAttribute('y', String(T + 2))
+  yLabel.textContent = `¥${formatAmount(ymax)}`
+  const xLabel = el('text', 'meowcb_axlabel')
+  xLabel.setAttribute('x', String(W - R))
+  xLabel.setAttribute('y', String(H - 4))
+  xLabel.setAttribute('text-anchor', 'end')
+  xLabel.textContent = `${xmax} 步`
+  svg.appendChild(yLabel)
+  svg.appendChild(xLabel)
+  put(svg as unknown as HTMLElement)
+
+  const legend = doc.createElement('div')
+  legend.className = 'meowcb_legend'
+  const items: Array<[string, string]> = [
+    ['meowcb_sw-avg', curve.sessions > 0 ? `平均 · ${curve.sessions} 个会话` : '平均 · 暂无样本'],
+    ['meowcb_sw-cur', '本会话'],
+  ]
+  for (const [cls, text] of items) {
+    const item = doc.createElement('span')
+    const sw = doc.createElement('span')
+    sw.className = `meowcb_sw ${cls}`
+    item.appendChild(sw)
+    item.appendChild(doc.createTextNode(text))
+    legend.appendChild(item)
+  }
+  put(legend)
 }
 
 /** 在官方弹层末尾贴上（或刷新）账单区块。 */
@@ -372,7 +396,7 @@ function CacheDataHook(props: any) {
 
   return React.createElement('span', {
     'data-meow-cachebilling': 'hook',
-    'data-meowcb-version': 'settings-ui-1',
+    'data-meowcb-version': 'curve-1',
     style: { display: 'none' },
   })
 }
@@ -382,7 +406,7 @@ export const inject = ['slots', 'connection', 'remote', 'settingsScope', 'settin
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any): void {
   // 版本标记：排障用，每次改动 bump——rev 滞后时看控制台标记就知道浏览器跑的是哪一版
-  console.log('[meow-cachebilling] client bundle: settings-ui-6')
+  console.log('[meow-cachebilling] client bundle: curve-1')
   if (
     typeof document !== 'undefined' &&
     document.querySelector(`style[data-plugin-css="${CSS_ID}"]`) === null

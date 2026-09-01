@@ -16,6 +16,7 @@ import { parse as parseYaml } from 'yaml'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import sz from '@deepseek-ai/schemastery'
 import { z } from 'zod'
+import { defineDomain, domainTable, type KvTable } from '@deepseek-ai/dsh-storage-domain'
 
 /** 插件名，与 cordis.patch.yml 的 name 一致，loader 诊断用。 */
 export const name = 'meow-cachebilling'
@@ -23,8 +24,8 @@ export const name = 'meow-cachebilling'
 /** 设置命名空间：预填层(rates.yml)之上的用户层住这里，与设置页卡片、手编 settings.yaml 三方共用。 */
 const SETTINGS_NS = settingsNamespace('meow-cachebilling')
 
-/** 必需服务：sessionProjections 由 @deepseek-ai/dsh-session-projection 提供。 */
-export const inject = ['sessionProjections']
+/** 必需服务：sessionProjections 由 @deepseek-ai/dsh-session-projection 提供，storageDomain 由 @deepseek-ai/dsh-storage-domain 提供（每步花费历史的落盘层），sessionPersistence 供旧记录迁移读日志。 */
+export const inject = ['sessionProjections', 'storageDomain', 'sessionPersistence']
 
 // ── 价目表（单位：元 / 百万 token）─────────────────────────────────────────
 // 编译后的行：write 编译时缺省 = miss（官方 API 不单独报写入价）。
@@ -396,14 +397,382 @@ interface TurnTotals {
   outputTokens: number
 }
 
-/** 按样本模型与事件时刻计算一轮三笔费用，元，round9 防精度漂移。 */
-function costOf(sample: Sample): { hit: number; miss: number; output: number } {
-  const { row } = rateOf(sample.provider, sample.model, sample.time)
+/** 按样本模型与事件时刻计算一轮三笔费用＋计价判定，元，round9 防精度漂移。 */
+function computeCosts(sample: Sample): {
+  hit: number
+  miss: number
+  output: number
+  tier: Tier | null
+  matched: boolean
+} {
+  const { row, tier, matched } = rateOf(sample.provider, sample.model, sample.time)
   return {
     hit: round9((sample.cacheReadTokens * row.hit) / 1e6),
     miss: round9((sample.inputTokens * row.miss + sample.cacheWriteTokens * row.write) / 1e6),
     output: round9((sample.outputTokens * row.output) / 1e6),
+    tier,
+    matched,
   }
+}
+
+function costOf(sample: Sample): { hit: number; miss: number; output: number } {
+  const c = computeCosts(sample)
+  return { hit: c.hit, miss: c.miss, output: c.output }
+}
+
+// ── 每步花费历史（曲线块的数据底座）─────────────────────────────────────
+// 猫猫拍板（2026-08-31）：①只存命中价目表的步——估算步是假数据，一步都不入库；
+// ②模型标签只在换模型/换峰谷的那一步打一条，后续步沿用，省存储；
+// ③平均曲线只纳入最近 30 天的会话；④峰谷分开当两个模型算。
+
+/** 平均参与窗口：最近 30 天。 */
+const RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+
+/** 主线会话判定：DSH core 给主线会话发 `session-*` id；原生子代理是裸 UUID（SessionId(randomUUID())），femwa 投影窗等第三方衍生会话各有前缀。
+ * 曲线统计只认主线会话——子代理与投影窗的每步模式不可比（猫猫：子代理和 proj 窗都不要算）。 */
+function isWindowSessionId(id: string): boolean {
+  return id.startsWith('session-')
+}
+
+/** 记录键 → 会话 id（剥掉换代后缀 `#n`）。 */
+function baseSessionId(recordId: string): string {
+  return recordId.includes('#') ? recordId.slice(0, recordId.lastIndexOf('#')) : recordId
+}
+
+/** 模型键："provider/model/tierWord"，峰谷分开当两个模型（tierWord: peak|valley|const）。 */
+function historyKey(provider: string, model: string, tier: Tier | null): string {
+  const word = tier === 'peak' ? 'peak' : tier === 'offPeak' ? 'valley' : 'const'
+  return `${provider.toLowerCase()}/${model.toLowerCase()}/${word}`
+}
+
+/** 单条精确步目：n=会话内第几次 API 调用（估算步也计数，只是不入库），t/s=turn/step，c=该步花费（元），m=模型键。 */
+interface HistoryStep {
+  n: number
+  t: number
+  s: number
+  c: number
+  m: string
+}
+
+const historyRecordSchema = z.object({
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  steps: z.array(
+    z.object({
+      n: z.number().int().min(1),
+      t: z.number().int(),
+      s: z.number().int(),
+      c: z.number().nonnegative(),
+    }),
+  ),
+  marks: z.record(z.string(), z.string()),
+  /** 历史代数；v6 时代的旧记录无此字段（迁移的目标特征） */
+  gen: z.number().int().nonnegative().optional(),
+})
+
+type HistoryRecord = z.infer<typeof historyRecordSchema>
+
+/** 跨会话历史域：走官方存储层，落成 DSH home 下的 meow_cachebilling.json（与 workspace.json 同层）。 */
+const historyDomain = defineDomain({
+  name: 'meow_cachebilling',
+  version: 1,
+  tables: { sessions: domainTable(historyRecordSchema) },
+})
+
+let historyTable: KvTable<string, HistoryRecord> | null = null
+let historyVersion = 0
+
+/** 折叠换模型标签：首条必打，之后仅换键时打——存储体积对齐猫猫的省空间格式。 */
+function deriveMarks(steps: HistoryStep[]): Record<string, string> {
+  const marks: Record<string, string> = {}
+  let prev: string | null = null
+  for (const step of steps) {
+    if (prev === null || step.m !== prev) marks[String(step.n)] = step.m
+    prev = step.m
+  }
+  return marks
+}
+
+/** 精确步入史：同一 n 覆盖（流式替换语义），新 n 追加。 */
+function upsertHistory(history: HistoryStep[], entry: HistoryStep): HistoryStep[] {
+  const idx = history.findIndex((e) => e.n === entry.n)
+  if (idx >= 0) {
+    const next = history.slice()
+    next[idx] = entry
+    return next
+  }
+  return [...history, entry]
+}
+
+/** API 调用计数：同一 (turn,step) 沿用 n（流式替换），新调用加一——估算步也计数，只是不入库。 */
+function nextCall(
+  call: { t: number; s: number; n: number } | null,
+  t: number,
+  s: number,
+): { t: number; s: number; n: number } {
+  if (call !== null && call.t === t && call.s === s) return call
+  return { t, s, n: (call?.n ?? 0) + 1 }
+}
+
+let curveCache: { version: number; key: string; result: { avg: number[]; sessions: number } } | null =
+  null
+
+/** 当前模型键的平均累计曲线：每步取「该步有它的所有会话」的平均增量再累加；x 轴保留到最远样本步（不可截断），无样本步平走；30 天外的会话不参与。结果按（键，落盘版本）缓存。 */
+function averageCurve(key: string): { avg: number[]; sessions: number } {
+  if (curveCache !== null && curveCache.version === historyVersion && curveCache.key === key) {
+    return curveCache.result
+  }
+  const empty = { avg: [] as number[], sessions: 0 }
+  if (historyTable === null) {
+    curveCache = { version: historyVersion, key, result: empty }
+    return empty
+  }
+  const now = Date.now()
+  let maxN = 0
+  let sessions = 0
+  const buckets = new Map<number, { sum: number; count: number }>()
+  for (const [recordId, record] of historyTable.entries()) {
+    if (!isWindowSessionId(baseSessionId(recordId))) continue
+    if (now - record.updatedAt > RETENTION_MS) continue
+    let current = ''
+    let hit = false
+    for (const step of record.steps) {
+      const mark = record.marks[String(step.n)]
+      if (mark !== undefined) current = mark
+      if (current !== key) continue
+      hit = true
+      if (step.n > maxN) maxN = step.n
+      const bucket = buckets.get(step.n) ?? { sum: 0, count: 0 }
+      bucket.sum += step.c
+      bucket.count += 1
+      buckets.set(step.n, bucket)
+    }
+    if (hit) sessions += 1
+  }
+  let result = empty
+  if (maxN > 0) {
+    const avg: number[] = []
+    let cum = 0
+    for (let k = 1; k <= maxN; k++) {
+      const bucket = buckets.get(k)
+      if (bucket !== undefined) cum += bucket.sum / bucket.count
+      avg.push(round9(cum))
+    }
+    result = { avg, sessions }
+  }
+  curveCache = { version: historyVersion, key, result }
+  return result
+}
+
+/** 曲线块视图数据：key=当前模型键，sessions=平均参与会话数，avg=平均累计（步 1..N 稠密），cur=本会话实际累计 [[n, 累计]...]（全部精确步，含换模型前的步——钱包真实轨迹）。 */
+interface CurveView {
+  key: string
+  sessions: number
+  avg: number[]
+  cur: Array<[number, number]>
+}
+
+function buildCurve(state: ProjectionState, tier: Tier | null, matched: boolean): CurveView | null {
+  const s = state.last
+  if (s === null || !matched || s.provider === null || s.model === null) return null
+  const key = historyKey(s.provider, s.model, tier)
+  const { avg, sessions } = averageCurve(key)
+  let cum = 0
+  const cur = state.history.map((e): [number, number] => {
+    cum = round9(cum + e.c)
+    return [e.n, cum]
+  })
+  if (avg.length === 0 && cur.length === 0) return null
+  return { key, sessions, avg, cur }
+}
+
+/** 历史落盘：投影 state.history 是唯一事实（重放可重建），这里只做搬运——usage 事件防抖 2s，turn/end 与会话关闭即写，写失败仅警告。
+ * 压缩换代后双记录：当前代写 `会话id#gen`（gen 0 沿用裸会话 id，与旧记录兼容），上一代归档写成独立样本（内容 immutable，写一次即可）。 */
+function installHistoryRecorder(ctx: any, table: KvTable<string, HistoryRecord>): void {
+  const timers = new Map<string, ReturnType<typeof setTimeout>>()
+  const archivedFlushed = new Map<string, number>()
+  const flush = (session: any): void => {
+    try {
+      // 子代理（裸 UUID）与投影窗（fem-proj-* 等）不入史：每步模式与主线会话不可比
+      if (!isWindowSessionId(String(session.id))) return
+      const state = ctx.sessionProjections.stateOf(session, 'cacheBilling') as
+        | ProjectionState
+        | undefined
+      if (state === undefined) return
+      const createdAt =
+        typeof session.header?.createdAt === 'number' ? session.header.createdAt : Date.now()
+      const warn = (what: string, e: unknown): void => {
+        console.warn(`[meow-cachebilling] 历史落盘失败（不影响账单）：${what}`, e)
+      }
+      const gen = state.gen
+      const recordId = gen === 0 ? String(session.id) : `${session.id}#${gen}`
+      if (state.history.length > 0) {
+        const record: HistoryRecord = {
+          createdAt,
+          updatedAt: Date.now(),
+          steps: state.history.map((e) => ({ n: e.n, t: e.t, s: e.s, c: e.c })),
+          marks: deriveMarks(state.history),
+          gen,
+        }
+        table
+          .put(recordId, record)
+          .then(() => {
+            historyVersion += 1
+          })
+          .catch((e: unknown) => {
+            warn(recordId, e)
+          })
+      }
+      const archive = state.prevGen
+      if (
+        archive !== null &&
+        archive.steps.length > 0 &&
+        (archivedFlushed.get(String(session.id)) ?? -1) < archive.gen
+      ) {
+        const archiveId =
+          archive.gen === 0 ? String(session.id) : `${session.id}#${archive.gen}`
+        const archiveRecord: HistoryRecord = {
+          createdAt,
+          updatedAt: archive.updatedAt,
+          steps: archive.steps.map((e) => ({ ...e })),
+          marks: { ...archive.marks },
+          gen: archive.gen,
+        }
+        table
+          .put(archiveId, archiveRecord)
+          .then(() => {
+            archivedFlushed.set(String(session.id), archive.gen)
+            historyVersion += 1
+          })
+          .catch((e: unknown) => {
+            warn(archiveId, e)
+          })
+      }
+    } catch (e) {
+      console.warn('[meow-cachebilling] 历史读取失败（不影响账单）：', e)
+    }
+  }
+  ctx.on('session/event', (session: any, event: any) => {
+    // 子代理/投影窗不监听不落盘
+    if (!isWindowSessionId(String(session.id))) return
+    // 压缩提交即写归档：手动压缩发生在 turn 之间，没有随后的 turn/end，不等防抖
+    if (event.type === 'compaction/summary') {
+      flush(session)
+      return
+    }
+    if (event.type === 'turn/end') {
+      const pending = timers.get(session.id)
+      if (pending !== undefined) {
+        clearTimeout(pending)
+        timers.delete(session.id)
+      }
+      flush(session)
+      return
+    }
+    const usage =
+      (event.type === 'assistant/chunk' && event.data?.chunk?.type === 'usage') ||
+      (event.type === 'assistant/message' && event.data?.usage !== undefined)
+    if (!usage || timers.has(session.id)) return
+    timers.set(
+      session.id,
+      setTimeout(() => {
+        timers.delete(session.id)
+        flush(session)
+      }, 2000),
+    )
+  })
+  ctx.on('session/disposed', (session: any) => {
+    const pending = timers.get(session.id)
+    if (pending !== undefined) {
+      clearTimeout(pending)
+      timers.delete(session.id)
+    }
+    flush(session)
+  })
+  ctx.effect(
+    () => () => {
+      for (const timer of timers.values()) clearTimeout(timer)
+      timers.clear()
+    },
+    'meow-cachebilling.historyTimers',
+  )
+}
+
+/** 旧记录一次性迁移：v6 时代写入的记录（无 gen 字段）不带换代语义，压缩点前后两段连记在一条里。
+ * 用官方 restore 全量重放该会话日志拿到换代后的 state，把旧记录拆成「上一代归档 + 当前代」两条；
+ * 无压缩的干净记录只补 gen 标记。逐条 fail-soft，失败保留原样下次启动重试（日志有 compaction/summary 才拆）。 */
+async function migrateLegacyRecords(ctx: any, table: KvTable<string, HistoryRecord>): Promise<void> {
+  const targets: Array<{ id: string; record: HistoryRecord }> = []
+  for (const [id, record] of table.entries()) {
+    if (record.gen !== undefined) continue
+    targets.push({ id, record })
+  }
+  if (targets.length === 0) return
+  let migrated = 0
+  for (const { id, record } of targets) {
+    try {
+      const baseId = baseSessionId(id)
+      if (!isWindowSessionId(baseId)) {
+        // 子代理/投影窗：不参与统计，补 gen 戳停止重试即可，不必读日志
+        if (record.gen !== 0) {
+          await table.put(id, { ...record, gen: 0 })
+          historyVersion += 1
+        }
+        migrated += 1
+        continue
+      }
+      const log = await ctx.sessionPersistence.readFrom(baseId, 0)
+      const events: any[] = log?.events ?? []
+      if (!events.some((e) => e.type === 'compaction/summary')) {
+        // 无压缩：干净单段，补 gen 标记即可
+        if (record.gen !== 0) {
+          await table.put(id, { ...record, gen: 0 })
+          historyVersion += 1
+        }
+        migrated += 1
+        continue
+      }
+      const restored = ctx.sessionProjections.restore({}, events, 0)
+      const state = restored?.checkpoint?.rows?.cacheBilling?.val as ProjectionState | undefined
+      if (state === undefined) throw new Error('restore 未产出 cacheBilling 状态')
+      if (state.prevGen !== null && state.prevGen.steps.length > 0) {
+        const archiveId = state.prevGen.gen === 0 ? baseId : `${baseId}#${state.prevGen.gen}`
+        await table.put(archiveId, {
+          createdAt: record.createdAt,
+          updatedAt: state.prevGen.updatedAt,
+          steps: state.prevGen.steps,
+          marks: state.prevGen.marks,
+          gen: state.prevGen.gen,
+        })
+      }
+      if (state.history.length > 0) {
+        const currentId = state.gen === 0 ? baseId : `${baseId}#${state.gen}`
+        await table.put(currentId, {
+          createdAt: record.createdAt,
+          updatedAt: Date.now(),
+          steps: state.history.map((e) => ({ n: e.n, t: e.t, s: e.s, c: e.c })),
+          marks: deriveMarks(state.history),
+          gen: state.gen,
+        })
+      }
+      // 多代压缩的旧记录：日志里只能恢复出最后两段，裸 id 上残留的合并段以空记录占位（聚合跳过空段），不再污染平均
+      if (state.gen >= 2) {
+        await table.put(baseId, {
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+          steps: [],
+          marks: {},
+          gen: 0,
+        })
+      }
+      historyVersion += 1
+      migrated += 1
+      console.log(`[meow-cachebilling] 旧记录已按压缩换代拆分：${id}（gen ${state.gen}）`)
+    } catch (e) {
+      console.warn(`[meow-cachebilling] 旧记录迁移失败（保留原样，下次启动重试）：${id}`, e)
+    }
+  }
+  console.log(`[meow-cachebilling] 历史记录迁移完成：${migrated}/${targets.length}`)
 }
 
 /** 缓存失效判定：发生过缓存写入。写入即失效，官方不报写入，多数路由为 false。 */
@@ -424,6 +793,19 @@ interface ProjectionState {
   turn: TurnTotals | null
   /** 会话累计金额与轮数 */
   totals: Totals
+  /** API 调用计数（估算步也计数，只是不入史）：t/s=turn/step，n=会话内第几次调用 */
+  call: { t: number; s: number; n: number } | null
+  /** 每步精确花费历史（只存命中价目表的步），曲线块数据源，重放可重建 */
+  history: HistoryStep[]
+  /** 历史代数：compaction/summary 提交即换代，压缩后的步从头计 */
+  gen: number
+  /** 上一代的归档段（压缩换代时的快照），录盘器把它写成独立样本记录 */
+  prevGen: {
+    gen: number
+    updatedAt: number
+    steps: Array<{ n: number; t: number; s: number; c: number }>
+    marks: Record<string, string>
+  } | null
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -433,8 +815,8 @@ export function apply(ctx: any, _config: any): void {
     // 没有 wire 即 host-only 单元，状态不进客户端快照，useProjection 永远拿不到值。
     projectionCtx.sessionProjections.register({
       key: 'cacheBilling',
-      // v5：state.totals/turn 增加 cacheReadTokens 累计，明细行 token 展示，旧持久化行作废重放
-      stateVersion: 5,
+      // v7：state.gen/prevGen 增加压缩换代——compaction/summary 时老步归档为独立样本（记录键 #gen），步数从头计；旧持久化行作废重放
+      stateVersion: 7,
       stateSchema: z.object({
         provider: z.string().nullable(),
         model: z.string().nullable(),
@@ -474,6 +856,38 @@ export function apply(ctx: any, _config: any): void {
           writeTokens: z.number().int().nonnegative(),
           fullMissSteps: z.number().int().nonnegative(),
         }),
+        call: z
+          .object({
+            t: z.number().int(),
+            s: z.number().int(),
+            n: z.number().int().min(1),
+          })
+          .nullable(),
+        history: z.array(
+          z.object({
+            n: z.number().int().min(1),
+            t: z.number().int(),
+            s: z.number().int(),
+            c: z.number().nonnegative(),
+            m: z.string().min(1),
+          }),
+        ),
+        gen: z.number().int().nonnegative(),
+        prevGen: z
+          .object({
+            gen: z.number().int().nonnegative(),
+            updatedAt: z.number(),
+            steps: z.array(
+              z.object({
+                n: z.number().int().min(1),
+                t: z.number().int(),
+                s: z.number().int(),
+                c: z.number().nonnegative(),
+              }),
+            ),
+            marks: z.record(z.string(), z.string()),
+          })
+          .nullable(),
       }),
       init: (): ProjectionState => ({
         provider: null,
@@ -492,6 +906,10 @@ export function apply(ctx: any, _config: any): void {
           writeTokens: 0,
           fullMissSteps: 0,
         },
+        call: null,
+        history: [],
+        gen: 0,
+        prevGen: null,
       }),
 
       apply: (state: ProjectionState, event: any): ProjectionState => {
@@ -511,6 +929,27 @@ export function apply(ctx: any, _config: any): void {
           const raw = event.data?.model
           const model = typeof raw === 'string' && raw !== '' ? raw : state.model
           return model !== state.model ? { ...state, model } : state
+        }
+
+        // 压缩提交点（compaction/summary 才算数，start/end 只是括号、失败路径无 summary）：表层被摘要替换，
+        // 历史语义换代——已有精确步归档为上一代独立样本（录盘器写成 `会话id#gen` 记录），步数从头计。
+        // 摘要器自身的 usage 在 summary 事件载荷里、不走 turn/step usage，不会混进每步历史。
+        if (event.type === 'compaction/summary') {
+          return {
+            ...state,
+            gen: state.gen + 1,
+            prevGen:
+              state.history.length > 0
+                ? {
+                    gen: state.gen,
+                    updatedAt: typeof event.time === 'number' ? event.time : Date.now(),
+                    steps: state.history.map(({ n, t, s, c }) => ({ n, t, s, c })),
+                    marks: deriveMarks(state.history),
+                  }
+                : state.prevGen,
+            call: null,
+            history: [],
+          }
         }
 
         // usage 样本，一轮就是一个 step
@@ -568,10 +1007,23 @@ export function apply(ctx: any, _config: any): void {
         // 新 step 是新一轮，覆盖上一轮；同 step 新样本是替换。
         // 会话累计随之维护：同 step 替换扣旧样本款加新样本款，不增轮数；新 step 整轮累加、轮数加一。失效计数同样遵循替换语义扣旧加新。
         // 当前轮累计：同 turn 累加，turn 切换重置，同 step 替换扣旧加新。
-        const current = costOf(sample)
+        const billed = computeCosts(sample)
+        const current = { hit: billed.hit, miss: billed.miss, output: billed.output }
         const writeMiss = isWriteMiss(sample)
         const fullMiss = isFullMiss(sample)
         const sampleInputTokens = sample.inputTokens + sample.cacheReadTokens + sample.cacheWriteTokens
+        // 每步花费入史：只存命中价目表的步（估算步是假数据，不入库），n 按调用计数（估算步也计数）
+        const call = nextCall(state.call, turn, step)
+        const history =
+          billed.matched && sample.provider !== null && sample.model !== null
+            ? upsertHistory(state.history, {
+                n: call.n,
+                t: turn,
+                s: step,
+                c: round9(billed.hit + billed.miss + billed.output),
+                m: historyKey(sample.provider, sample.model, billed.tier),
+              })
+            : state.history
         if (prev !== null && prev.turn === turn && prev.step === step) {
           const old = costOf(prev)
           const prevInputTokens = prev.inputTokens + prev.cacheReadTokens + prev.cacheWriteTokens
@@ -590,6 +1042,8 @@ export function apply(ctx: any, _config: any): void {
           return {
             ...state,
             last: sample,
+            call,
+            history,
             turn: {
               ...turnBase,
               id: turn,
@@ -621,6 +1075,8 @@ export function apply(ctx: any, _config: any): void {
         return {
           ...state,
           last: sample,
+          call,
+          history,
           turn: sameTurn
             ? {
                 ...state.turn!,
@@ -714,6 +1170,15 @@ export function apply(ctx: any, _config: any): void {
           sessionWriteTokens: z.number().int().nonnegative(),
           /** 会话累计完全失效 step 数，有输入但缓存命中为 0，任何路由都可靠 */
           sessionFullMissSteps: z.number().int().nonnegative(),
+          /** 曲线块（第二块）：当前模型键的平均累计曲线 + 本会话实际累计；null = 当前模型未命中价目表（估算步不入曲线） */
+          curve: z
+            .object({
+              key: z.string(),
+              sessions: z.number().int().nonnegative(),
+              avg: z.array(z.number()),
+              cur: z.array(z.tuple([z.number().int(), z.number()])),
+            })
+            .nullable(),
         }),
         view: (state: ProjectionState) => {
           const s = state.last
@@ -754,6 +1219,7 @@ export function apply(ctx: any, _config: any): void {
               sessionMissSteps: sessionTotals.missSteps,
               sessionWriteTokens: sessionTotals.writeTokens,
               sessionFullMissSteps: sessionTotals.fullMissSteps,
+              curve: null,
             }
           }
           const totalInput = s.inputTokens + s.cacheReadTokens + s.cacheWriteTokens
@@ -799,6 +1265,7 @@ export function apply(ctx: any, _config: any): void {
             sessionMissSteps: sessionTotals.missSteps,
             sessionWriteTokens: sessionTotals.writeTokens,
             sessionFullMissSteps: sessionTotals.fullMissSteps,
+            curve: buildCurve(state, tier, matched),
           }
         },
       },
@@ -831,6 +1298,28 @@ export function apply(ctx: any, _config: any): void {
   } catch (e) {
     console.warn('[meow-cachebilling] 设置命名空间注册失败（账单继续使用预填层）：', e)
   }
+
+  // ── 每步花费历史：开域 + 录盘（曲线块的数据底座，失败只降级不炸）──
+  ctx.storageDomain
+    .open(historyDomain)
+    .then((domain: any) => {
+      const table = domain.table('sessions') as KvTable<string, HistoryRecord>
+      historyTable = table
+      ctx.effect(
+        () => () => {
+          historyTable = null
+          void domain.close()
+        },
+        'meow-cachebilling.historyDomain',
+      )
+      installHistoryRecorder(ctx, table)
+      // 旧记录迁移（v6 时代的压缩两段连记 → 按日志里的 compaction/summary 拆代），逐条 fail-soft
+      void migrateLegacyRecords(ctx, table)
+      console.log('[meow-cachebilling] 历史域已打开：meow_cachebilling')
+    })
+    .catch((e: unknown) => {
+      console.warn('[meow-cachebilling] 历史域打开失败（曲线块降级，账单不受影响）：', e)
+    })
 }
 
 /** 诊断口：node -e 里用固定时间戳验证价目表与峰谷判定，不进任何运行时路径。 */

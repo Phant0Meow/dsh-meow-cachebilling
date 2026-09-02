@@ -445,13 +445,15 @@ function historyKey(provider: string, model: string, tier: Tier | null): string 
   return `${provider.toLowerCase()}/${model.toLowerCase()}/${word}`
 }
 
-/** 单条精确步目：n=会话内第几次 API 调用（估算步也计数，只是不入库），t/s=turn/step，c=该步花费（元），m=模型键。 */
+/** 单条精确步目：n=会话内第几次 API 调用（估算步也计数，只是不入库），t/s=turn/step，c=该步花费（元），m=模型键，mi=该步缓存未命中金额（元，含写入；消耗比较块的「读代码」按轮归组求和用）。 */
 interface HistoryStep {
   n: number
   t: number
   s: number
   c: number
   m: string
+  /** optional 兼容旧快照：stateVersion 8 重放后必然存在，读取处一律 ?? 0，绝不让 schema 校验 fail-loud */
+  mi?: number
 }
 
 const historyRecordSchema = z.object({
@@ -634,7 +636,7 @@ function installHistoryRecorder(ctx: any, table: KvTable<string, HistoryRecord>)
         const archiveRecord: HistoryRecord = {
           createdAt,
           updatedAt: archive.updatedAt,
-          steps: archive.steps.map((e) => ({ ...e })),
+          steps: archive.steps.map(({ n, t, s, c }) => ({ n, t, s, c })),
           marks: { ...archive.marks },
           gen: archive.gen,
         }
@@ -740,7 +742,7 @@ async function migrateLegacyRecords(ctx: any, table: KvTable<string, HistoryReco
         await table.put(archiveId, {
           createdAt: record.createdAt,
           updatedAt: state.prevGen.updatedAt,
-          steps: state.prevGen.steps,
+          steps: state.prevGen.steps.map(({ n, t, s, c }) => ({ n, t, s, c })),
           marks: state.prevGen.marks,
           gen: state.prevGen.gen,
         })
@@ -803,7 +805,7 @@ interface ProjectionState {
   prevGen: {
     gen: number
     updatedAt: number
-    steps: Array<{ n: number; t: number; s: number; c: number }>
+    steps: Array<{ n: number; t: number; s: number; c: number; mi?: number }>
     marks: Record<string, string>
   } | null
 }
@@ -815,8 +817,8 @@ export function apply(ctx: any, _config: any): void {
     // 没有 wire 即 host-only 单元，状态不进客户端快照，useProjection 永远拿不到值。
     projectionCtx.sessionProjections.register({
       key: 'cacheBilling',
-      // v7：state.gen/prevGen 增加压缩换代——compaction/summary 时老步归档为独立样本（记录键 #gen），步数从头计；旧持久化行作废重放
-      stateVersion: 7,
+      // v8：history/prevGen 步目补 mi（该步缓存未命中金额，消耗比较块「读代码」的数据底座）——旧持久化行作废重放，重放后所有步自动补上
+      stateVersion: 8,
       stateSchema: z.object({
         provider: z.string().nullable(),
         model: z.string().nullable(),
@@ -870,6 +872,7 @@ export function apply(ctx: any, _config: any): void {
             s: z.number().int(),
             c: z.number().nonnegative(),
             m: z.string().min(1),
+            mi: z.number().nonnegative().optional(),
           }),
         ),
         gen: z.number().int().nonnegative(),
@@ -883,6 +886,7 @@ export function apply(ctx: any, _config: any): void {
                 t: z.number().int(),
                 s: z.number().int(),
                 c: z.number().nonnegative(),
+                mi: z.number().nonnegative().optional(),
               }),
             ),
             marks: z.record(z.string(), z.string()),
@@ -943,7 +947,7 @@ export function apply(ctx: any, _config: any): void {
                 ? {
                     gen: state.gen,
                     updatedAt: typeof event.time === 'number' ? event.time : Date.now(),
-                    steps: state.history.map(({ n, t, s, c }) => ({ n, t, s, c })),
+                    steps: state.history.map(({ n, t, s, c, mi }) => ({ n, t, s, c, mi })),
                     marks: deriveMarks(state.history),
                   }
                 : state.prevGen,
@@ -1022,6 +1026,7 @@ export function apply(ctx: any, _config: any): void {
                 s: step,
                 c: round9(billed.hit + billed.miss + billed.output),
                 m: historyKey(sample.provider, sample.model, billed.tier),
+                mi: billed.miss,
               })
             : state.history
         if (prev !== null && prev.turn === turn && prev.step === step) {
@@ -1179,6 +1184,14 @@ export function apply(ctx: any, _config: any): void {
               cur: z.array(z.tuple([z.number().int(), z.number()])),
             })
             .nullable(),
+          /** 消耗比较块（第三块）：readCode=前两轮缓存未命中之和（读代码）；cache=当前步命中金额（缓存）；fullMiss=当前上下文全按 miss 折算（缓存失效）。null=尚无用量样本 */
+          compare: z
+            .object({
+              readCode: z.number().nonnegative(),
+              cache: z.number().nonnegative(),
+              fullMiss: z.number().nonnegative(),
+            })
+            .nullable(),
         }),
         view: (state: ProjectionState) => {
           const s = state.last
@@ -1220,6 +1233,7 @@ export function apply(ctx: any, _config: any): void {
               sessionWriteTokens: sessionTotals.writeTokens,
               sessionFullMissSteps: sessionTotals.fullMissSteps,
               curve: null,
+              compare: null,
             }
           }
           const totalInput = s.inputTokens + s.cacheReadTokens + s.cacheWriteTokens
@@ -1228,6 +1242,18 @@ export function apply(ctx: any, _config: any): void {
           const missCost = round9((s.inputTokens * row.miss + s.cacheWriteTokens * row.write) / 1e6)
           const outputCost = round9((s.outputTokens * row.output) / 1e6)
           const turn = state.turn
+          // 消耗比较块「读代码」：跨代（归档段+当前代）按轮归组，取轮序号最小的两个 turn 的 miss 之和——AI 开窗头两轮集中读代码的代价
+          const turnMiss = new Map<number, number>()
+          for (const e of [
+            ...(state.prevGen === null ? [] : state.prevGen.steps),
+            ...state.history,
+          ]) {
+            turnMiss.set(e.t, (turnMiss.get(e.t) ?? 0) + (e.mi ?? 0))
+          }
+          const firstTurns = [...turnMiss.keys()].sort((a, b) => a - b).slice(0, 2)
+          const readCode = round9(firstTurns.reduce((sum, t) => sum + (turnMiss.get(t) ?? 0), 0))
+          // 「缓存失效」：当前上下文全量 token（= 圆环「上下文已用」，人+AI+工具都在里面）按当前 miss 单价折算——本轮 AI 刚输出的 token 下一轮才进上下文，不预支
+          const fullMiss = round9((totalInput * row.miss) / 1e6)
           return {
             available: totalInput > 0 || s.outputTokens > 0,
             cost,
@@ -1266,6 +1292,11 @@ export function apply(ctx: any, _config: any): void {
             sessionWriteTokens: sessionTotals.writeTokens,
             sessionFullMissSteps: sessionTotals.fullMissSteps,
             curve: buildCurve(state, tier, matched),
+            compare: {
+              readCode,
+              cache: cost,
+              fullMiss,
+            },
           }
         },
       },

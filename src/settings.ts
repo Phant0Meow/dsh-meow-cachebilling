@@ -4,6 +4,9 @@
  * 独立模块：只管设置页的显示与读写，不掺和账单渲染；由 client.ts 引入（一行 applySettings(ctx)，失败仅警告不影响账单）。
  * 形态：设置页顶级分区（settings.section，与「通用」「模型」「插件」平级的独立标签页）。
  * 2026-08-30 猫猫拍板「我们需要在设置加个标签页，不是把信息加到别人的标签页里」——由旧形态（settings.plugin.item 卡片，住在官方插件 tab）升级而来。
+ * 2026-09-10 价目条目按 provider 分组展示：组头 = 供应商名 + 条目数 + 组内「添加」（provider 预填该组），行内只报模型名。
+ * 2026-09-10 模型/供应商输入框挂 datalist：进设置页 + 每次开编辑器扫一遍 DSH 会话模型目录（sessions.models，
+ *           settings+预置合并后的最终目录，借用模型选择器的同一份 RPC）；模型唯一命中供应商时自动带出 provider。
  * 契约照官方 settings.section（ui-settings-general / ui-settings-models 同款）：
  *   - host 半身（index.ts）用 installSettingsSection 注册命名空间 meow-cachebilling，base = 包根 rates.yml 预填层（不变）
  *   - 浏览器半身挂 settings.section（list slot：id + order + label），整页渲染价目表
@@ -41,6 +44,14 @@ const CSS = `
 .meowcb_set_actions{display:flex;gap:8px;margin-top:2px}
 .meowcb_set_muted{color:var(--dsw-alias-label-caption);font-size:12px}
 .meowcb_set_section{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;margin-top:4px}
+.meowcb_set_block{display:flex;flex-direction:column;gap:8px}
+.meowcb_set_group{align-items:center;display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.meowcb_set_group::before{background:var(--dsw-alias-border-l2);border-radius:2px;content:'';height:12px;width:3px}
+.meowcb_set_group_name{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:600}
+.meowcb_set_group_count{background:color-mix(in srgb,currentColor 10%,transparent);border-radius:999px;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:18px;padding:0 8px}
+.meowcb_set_group_add{cursor:pointer;font-size:12px;margin-left:auto;padding:2px 12px}
+.meowcb_set_group_add:hover{border-color:var(--dsw-alias-border-l2)}
+.meowcb_set_items{display:flex;flex-direction:column;gap:8px;margin-left:14px}
 .meowcb_set_tier{font-weight:600}
 .meowcb_set_title{font-size:16px;font-weight:600;margin:0}
 .meowcb_set_subtitle{color:var(--dsw-alias-label-caption);font-size:12px;line-height:1.6;margin:0}
@@ -137,6 +148,41 @@ const entryKey = (e: { model: string; provider?: string }): string =>
   `${(e.provider ?? '*').toLowerCase()}/${e.model.trim().toLowerCase()}`
 
 const toNum = (v: string): number => Number(v.trim())
+
+// ── DSH 模型目录（设置页输入框的下拉候选）───────────────────────────────────
+
+/** 会话模型目录里的一条：provider=路由 id（与价目表 provider 同一命名空间），model=API 模型 id。 */
+interface CatalogModel {
+  provider: string
+  model: string
+}
+
+const MODEL_DATALIST_ID = 'meowcb-model-catalog'
+const PROVIDER_DATALIST_ID = 'meowcb-provider-catalog'
+
+/** 模型 id 在目录里命中的唯一供应商（大小写不敏感精确匹配；多供应商共用同 id 时不猜）。 */
+function uniqueProviderFor(model: string, catalog: CatalogModel[] | null): string | null {
+  const needle = model.trim().toLowerCase()
+  if (!needle || !catalog) return null
+  let hit: string | null = null
+  for (const row of catalog) {
+    if (row.model.toLowerCase() !== needle) continue
+    if (hit !== null && hit !== row.provider) return null
+    hit = row.provider
+  }
+  return hit
+}
+
+/** 目录 groups（provider 分组）→ 扁平候选表。 */
+function groupsToRows(groups: ReadonlyArray<{ id?: string; models?: ReadonlyArray<{ id?: string }> }> | undefined): CatalogModel[] {
+  const out: CatalogModel[] = []
+  for (const g of groups ?? []) {
+    for (const m of g.models ?? []) {
+      if (g.id && m.id) out.push({ provider: g.id, model: m.id })
+    }
+  }
+  return out
+}
 
 // ── 编辑草稿 ────────────────────────────────────────────────────────────────
 
@@ -270,7 +316,7 @@ function PriceInputs(props: { d: Draft; set: (patch: Partial<Draft>) => void; mo
 
 // ── 卡片组件 ────────────────────────────────────────────────────────────────
 
-function BillingCard(props: { scope: any }): any {
+function BillingCard(props: { scope: any; scan?: () => Promise<CatalogModel[]> }): any {
   const scope = props.scope
   const subscribe = React.useCallback((cb: () => void) => scope.subscribe(cb), [scope])
   const getSnapshot = React.useCallback(() => scope.getSnapshot(), [scope])
@@ -288,6 +334,24 @@ function BillingCard(props: { scope: any }): any {
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState(false)
 
+  // DSH 模型目录：进页面扫一次；每次打开编辑器再扫一次（设置页 section 可能常驻不重挂，
+  // 只靠挂载扫描会变陈旧）。null=还没扫到（纯手输）；扫描失败不动旧值。
+  const [catalog, setCatalog] = React.useState<CatalogModel[] | null>(null)
+  const catalogGen = React.useRef(0)
+  const refreshCatalog = React.useCallback((): void => {
+    if (!props.scan) return
+    const gen = ++catalogGen.current
+    props.scan().then(
+      (rows) => {
+        if (gen === catalogGen.current) setCatalog(rows)
+      },
+      () => {},
+    )
+  }, [props.scan])
+  React.useEffect(() => {
+    refreshCatalog()
+  }, [refreshCatalog])
+
   const base = snap.base ?? {}
   const user = snap.user ?? {}
   const keys = Array.from(new Set([...Object.keys(base), ...Object.keys(user)]))
@@ -297,7 +361,7 @@ function BillingCard(props: { scope: any }): any {
     setDraft((prev) => (prev ? { ...prev, ...patch } : prev))
   }
 
-  const open = (key: string | null): void => {
+  const open = (key: string | null, prefillProvider?: string): void => {
     setError(null)
     if (key === null) {
       setExpanded(null)
@@ -305,8 +369,16 @@ function BillingCard(props: { scope: any }): any {
       return
     }
     const entry = key === '__new__' ? undefined : (user[key] ?? base[key])
-    setDraft(entry ? draftFromEntry(entry) : emptyDraft())
+    const d = entry ? draftFromEntry(entry) : emptyDraft()
+    // 组头「添加」入口：provider 预填为该组，内置供应商顺带带出账单时区（与手输 provider 的自动带出一致）
+    if (!entry && prefillProvider) {
+      d.provider = prefillProvider
+      const known = PROVIDER_TIMEZONE[prefillProvider]
+      if (known) d.timezone = known
+    }
+    setDraft(d)
     setExpanded(key)
+    refreshCatalog()
   }
 
   const save = async (): Promise<void> => {
@@ -378,6 +450,7 @@ function BillingCard(props: { scope: any }): any {
             el('span', { className: 'meowcb_set_label' }, '供应商'),
             el('input', {
               className: 'meowcb_set_input meowcb_set_input_grow',
+              list: PROVIDER_DATALIST_ID,
               value: draft.provider,
               onChange: (e: any) => {
                 const provider = e.target.value
@@ -389,8 +462,19 @@ function BillingCard(props: { scope: any }): any {
             el('span', { className: 'meowcb_set_label' }, '模型'),
             el('input', {
               className: 'meowcb_set_input meowcb_set_input_grow',
+              list: MODEL_DATALIST_ID,
               value: draft.model,
-              onChange: (e: any) => set({ model: e.target.value }),
+              onChange: (e: any) => {
+                const model = e.target.value
+                // 目录唯一命中且供应商还空着：顺带带出供应商（内置的连时区一起）
+                const hit = uniqueProviderFor(model, catalog)
+                if (hit !== null && !draft.provider.trim()) {
+                  const known = PROVIDER_TIMEZONE[hit]
+                  set(known ? { model, provider: hit, timezone: known } : { model, provider: hit })
+                  return
+                }
+                set({ model })
+              },
               placeholder: 'glm-5.3-flash',
             }),
             el(
@@ -457,7 +541,7 @@ function BillingCard(props: { scope: any }): any {
           ),
         )
 
-  const rows = keys.map((key) => {
+  const renderRow = (key: string): any => {
     const entry = user[key] ?? base[key]
     if (!entry) return null
     const inBase = key in base
@@ -471,8 +555,9 @@ function BillingCard(props: { scope: any }): any {
         ? el('span', { className: 'meowcb_set_badge meowcb_set_badge_custom' }, '自定义')
         : el('span', { className: 'meowcb_set_badge meowcb_set_badge_prefill' }, '预填')
     const tier = entry.peak ? '（峰谷）' : ''
+    // 供应商已上移到组头，行内只报模型名
     return isExpanded
-      ? editor
+      ? React.cloneElement(editor as any, { key })
       : el(
           'div',
           {
@@ -480,12 +565,77 @@ function BillingCard(props: { scope: any }): any {
             className: 'meowcb_set_row',
             onClick: () => open(key),
           },
-          el('span', null, `${entry.provider ?? '全部路由'} / ${entry.model}${tier}`),
+          el('span', null, `${entry.model}${tier}`),
           badge,
         )
+  }
+
+  // 按 provider 分组展示（条目 key 前缀本就是 provider/model）：通配组（无 provider）排最前，
+  // 其余按名称排序；组内保持「预填按 rates.yml 顺序 → 自定义追加」的原有顺序
+  const groups: { provider: string; keys: string[] }[] = []
+  const byProvider = new Map<string, string[]>()
+  for (const key of keys) {
+    const entry = user[key] ?? base[key]
+    if (!entry) continue
+    const provider = (entry.provider ?? '').toLowerCase()
+    let bucket = byProvider.get(provider)
+    if (!bucket) {
+      bucket = []
+      byProvider.set(provider, bucket)
+      groups.push({ provider, keys: bucket })
+    }
+    bucket.push(key)
+  }
+  groups.sort((a, b) => {
+    if (!a.provider) return -1
+    if (!b.provider) return 1
+    return a.provider.localeCompare(b.provider)
   })
 
+  const rows = groups.map((g) =>
+    el(
+      'div',
+      { key: `meowcb_group_${g.provider || '*'}`, className: 'meowcb_set_block' },
+      el(
+        'div',
+        { className: 'meowcb_set_group' },
+        el('span', { className: 'meowcb_set_group_name' }, g.provider || '全部路由'),
+        el('span', { className: 'meowcb_set_group_count' }, `${g.keys.length} 个模型`),
+        el(
+          'button',
+          {
+            className: 'meowcb_set_input meowcb_set_group_add',
+            onClick: () => open('__new__', g.provider || undefined),
+          },
+          '添加',
+        ),
+      ),
+      el('div', { className: 'meowcb_set_items' }, ...g.keys.map((key) => renderRow(key))),
+    ),
+  )
+
   const expandedIsNew = expanded === '__new__'
+
+  // datalist 候选：模型按 id 去重（多供应商共用时把供应商列进标签里）；供应商取唯一值排序
+  const modelOptions: any[] = []
+  const providerOptions: any[] = []
+  if (catalog !== null) {
+    const providersByModel = new Map<string, Set<string>>()
+    for (const row of catalog) {
+      let ps = providersByModel.get(row.model)
+      if (!ps) {
+        ps = new Set()
+        providersByModel.set(row.model, ps)
+      }
+      ps.add(row.provider)
+    }
+    for (const [model, providers] of [...providersByModel].sort((a, b) => a[0].localeCompare(b[0]))) {
+      modelOptions.push(el('option', { key: model, value: model }, [...providers].sort().join(' / ')))
+    }
+    for (const p of [...new Set(catalog.map((row) => row.provider))].sort()) {
+      providerOptions.push(el('option', { key: p, value: p }))
+    }
+  }
 
   return el(
     'div',
@@ -509,21 +659,107 @@ function BillingCard(props: { scope: any }): any {
       ),
     ),
     ...rows,
+    modelOptions.length > 0 ? el('datalist', { key: 'dl-model', id: MODEL_DATALIST_ID }, modelOptions) : null,
+    providerOptions.length > 0
+      ? el('datalist', { key: 'dl-provider', id: PROVIDER_DATALIST_ID }, providerOptions)
+      : null,
   )
 }
 
 // ── 挂载 ────────────────────────────────────────────────────────────────────
 
 export function applySettings(ctx: any): void {
-  if (typeof document !== 'undefined' && document.querySelector(`style[data-plugin-css="${CSS_ID}"]`) === null) {
-    const tag = document.createElement('style')
-    tag.dataset.plugin = 'meow-cachebilling-settings'
-    tag.dataset.pluginCss = CSS_ID
+  // 覆盖式注入：外壳重注入插件时旧 style 标签仍在 document 里，只判空插入会让升级后的新样式永远进不来
+  if (typeof document !== 'undefined') {
+    let tag = document.querySelector<HTMLStyleElement>(`style[data-plugin-css="${CSS_ID}"]`)
+    if (tag === null) {
+      tag = document.createElement('style')
+      tag.dataset.plugin = 'meow-cachebilling-settings'
+      tag.dataset.pluginCss = CSS_ID
+      document.head.appendChild(tag)
+    }
     tag.textContent = CSS
-    document.head.appendChild(tag)
   }
 
   const scope = ctx.settingsScope.bind({ namespace: SETTINGS_NS })
+
+  // DSH 模型目录扫描：借用模型选择器的同一份 RPC，目录 = settings+预置合并后的最终目录（全局投影，与会话无关）。
+  // 两个构建的面不同：0.1.5-rc.1 = remote.session.modelCatalog()（无参数，rc.1 里没有 sessions.models 这个
+  // RPC——照新版源码写会静默扫空）；更新构建 = connection.api.sessions.models({sessionId})。失败 → 空表，纯手输。
+  // 每一步的探测结果写 window.__meowcbScanTrace（排障用；守卫代理读服务是 throw 不是 undefined，必须整体兜住）。
+  const scanCatalog = async (): Promise<CatalogModel[]> => {
+    const trace: string[] = []
+    const publish = (): void => {
+      ;(window as any).__meowcbScanTrace = trace
+    }
+    try {
+      // rc.1 的 remote 面要求 inject 声明 'remote.session' 才能给属性访问器；但声明它会在没有该服务的
+      // 新版构建上把插件 park 死。ctx.get() 是显式解析，不走声明检查，两条路都试。
+      const candidates: Array<{ label: string; face: any }> = []
+      try {
+        const viaGet = typeof (ctx as any).get === 'function' ? (ctx as any).get('remote.session') : undefined
+        candidates.push({ label: `ctx.get(remote.session)=${typeof viaGet?.modelCatalog}`, face: viaGet })
+      } catch (e) {
+        candidates.push({ label: `ctx.get threw: ${e instanceof Error ? e.message : String(e)}`, face: undefined })
+      }
+      try {
+        const viaProp = (ctx as any).remote?.session
+        candidates.push({ label: `ctx.remote.session=${typeof viaProp?.modelCatalog}`, face: viaProp })
+      } catch (e) {
+        candidates.push({ label: `ctx.remote.session threw: ${e instanceof Error ? e.message : String(e)}`, face: undefined })
+      }
+      for (const c of candidates) {
+        trace.push(c.label)
+        if (typeof c.face?.modelCatalog !== 'function') continue
+        const r = await c.face.modelCatalog()
+        const res = (r as any)?.result ?? r
+        trace.push(`rc1 ok=${String(res?.ok)} groups=${String(res?.value?.groups?.length)}`)
+        if (res?.ok) {
+          const rows = groupsToRows(res.value?.groups)
+          if (rows.length > 0) {
+            publish()
+            return rows
+          }
+        }
+      }
+    } catch (e) {
+      trace.push(`rc1 threw: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    try {
+      const sessions = (ctx as any).sessions
+      const api = (ctx as any).connection?.api?.sessions
+      trace.push(`sessions=${typeof sessions} api.sessions.models=${typeof api?.models} list=${typeof sessions?.list?.getSnapshot}`)
+      if (sessions?.list?.getSnapshot && typeof api?.models === 'function') {
+        const snap = sessions.list.getSnapshot()
+        const ids: string[] = Array.isArray(snap?.ids) ? snap.ids : Object.keys(snap?.byId ?? {})
+        const candidates = [snap?.current, ...ids].filter(
+          (id: unknown): id is string => typeof id === 'string' && id.length > 0,
+        )
+        trace.push(`candidates=${candidates.length}`)
+        for (const sessionId of candidates) {
+          if (sessions.subagentAddress?.(sessionId)) continue
+          try {
+            const r = await api.models({ sessionId })
+            const res = (r as any)?.result ?? r
+            trace.push(`sess ok=${String(res?.ok)} groups=${String(res?.value?.groups?.length ?? 'n/a')}`)
+            if (res?.ok) {
+              const rows = groupsToRows(res.value?.groups)
+              if (rows.length > 0) {
+                publish()
+                return rows
+              }
+            }
+          } catch {
+            trace.push('sess threw, next candidate')
+          }
+        }
+      }
+    } catch (e) {
+      trace.push(`fallback threw: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    publish()
+    return []
+  }
 
   // 顶级分区（与「通用」「模型」「插件」平级）：list slot 契约 = id + order + label；
   // label 直接返回中文——不挂 locale 字典（第三方字典注册在官方外壳没有席位，旧卡片形态实测注册不上）。
@@ -534,7 +770,7 @@ export function applySettings(ctx: any): void {
         id: SETTINGS_NS,
         order: 30,
         label: () => '喵缓存账单',
-        inject: (): unknown => ({ scope }),
+        inject: (): unknown => ({ scope, scan: scanCatalog }),
       },
       BillingSection,
     ),
@@ -542,7 +778,7 @@ export function applySettings(ctx: any): void {
 }
 
 /** 顶级分区整页：标题 + 说明 + 价目表主体（BillingCard）。 */
-function BillingSection(props: { scope: any }): any {
+function BillingSection(props: { scope: any; scan?: () => Promise<CatalogModel[]> }): any {
   return el(
     'div',
     { className: 'meowcb_set_page' },
@@ -552,6 +788,6 @@ function BillingSection(props: { scope: any }): any {
       { className: 'meowcb_set_subtitle' },
       '上下文缓存到底花了多少钱，这里能改价、能补价。改完即时生效，无需重启。',
     ),
-    el(BillingCard, { scope: props.scope }),
+    el(BillingCard, { scope: props.scope, scan: props.scan }),
   )
 }

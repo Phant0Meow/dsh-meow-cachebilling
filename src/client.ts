@@ -545,26 +545,27 @@ function CacheDataHook(props: any) {
 
   return React.createElement('span', {
     'data-meow-cachebilling': 'hook',
-    'data-meowcb-version': 'cmp-29',
+    'data-meowcb-version': 'cmp-33',
     style: { display: 'none' },
   })
 }
 
-export const inject = ['slots', 'connection', 'remote', 'settingsScope', 'settingsSchema']
+export const inject = ['slots', 'connection', 'sessions', 'remote', 'settingsScope', 'settingsSchema']
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any): void {
   // 版本标记：排障用，每次改动 bump——rev 滞后时看控制台标记就知道浏览器跑的是哪一版
-  console.log('[meow-cachebilling] client bundle: cmp-29')
-  if (
-    typeof document !== 'undefined' &&
-    document.querySelector(`style[data-plugin-css="${CSS_ID}"]`) === null
-  ) {
-    const tag = document.createElement('style')
-    tag.dataset.plugin = 'meow-cachebilling'
-    tag.dataset.pluginCss = CSS_ID
+  console.log('[meow-cachebilling] client bundle: cmp-33')
+  // 覆盖式注入：外壳重注入插件时旧 style 标签仍在 document 里，只判空插入会让升级后的新样式永远进不来
+  if (typeof document !== 'undefined') {
+    let tag = document.querySelector<HTMLStyleElement>(`style[data-plugin-css="${CSS_ID}"]`)
+    if (tag === null) {
+      tag = document.createElement('style')
+      tag.dataset.plugin = 'meow-cachebilling'
+      tag.dataset.pluginCss = CSS_ID
+      document.head.appendChild(tag)
+    }
     tag.textContent = CSS
-    document.head.appendChild(tag)
   }
   if (typeof document !== 'undefined') {
     startPanelBridge()

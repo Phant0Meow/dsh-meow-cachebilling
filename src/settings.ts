@@ -7,6 +7,9 @@
  * 2026-09-10 价目条目按 provider 分组展示：组头 = 供应商名 + 条目数 + 组内「添加」（provider 预填该组），行内只报模型名。
  * 2026-09-10 模型/供应商输入框挂 datalist：进设置页 + 每次开编辑器扫一遍 DSH 会话模型目录（sessions.models，
  *           settings+预置合并后的最终目录，借用模型选择器的同一份 RPC）；模型唯一命中供应商时自动带出 provider。
+ * 2026-09-14 时区判断三处合一：显示（tzFor）/ 校验（validateDraft）/ 落盘（buildEntry）共用 autoTzOf 查同一张
+ *           内置表——预设 provider 的峰谷条目时区由表带出，输入框隐藏时不再强校验手填时区（修「时区输入框不
+ *           出现就永远保存不了」；空串也绝不落盘，host schema min(1) 会拒）。
  * 契约照官方 settings.section（ui-settings-general / ui-settings-models 同款）：
  *   - host 半身（index.ts）用 installSettingsSection 注册命名空间 meow-cachebilling，base = 包根 rates.yml 预填层（不变）
  *   - 浏览器半身挂 settings.section（list slot：id + order + label），整页渲染价目表
@@ -99,6 +102,11 @@ const PROVIDER_TIMEZONE: Record<string, string> = {
 
 const DAY_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 const RANGE_PATTERN = /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/
+
+/** provider 命中内置表 → 返回计费时区；否则 null（= 时区输入框需要出现、峰谷条目需要手填）。 */
+function autoTzOf(provider: string): string | null {
+  return PROVIDER_TIMEZONE[provider.trim().toLowerCase()] ?? null
+}
 
 /** 矩阵语法 → when 组：[mon-fri][09:00-12:00, 14:00-18:00] + [sat, sun][00:00-24:00] */
 function parseWhenText(text: string): WhenGroup[] {
@@ -251,7 +259,8 @@ function validateDraft(d: Draft): string | null {
     return null
   }
   if (d.isPeak) {
-    if (!d.timezone.trim()) return '时区不能为空（内置供应商会自动带出，其余填 IANA 名）'
+    // 与 tzFor 用同一张表：输入框隐藏（预设 provider）= 时区由表带出，不再要求手填
+    if (!d.timezone.trim() && autoTzOf(d.provider) === null) return '时区不能为空（内置供应商会自动带出，其余填 IANA 名）'
     try {
       parseWhenText(d.whenText)
     } catch (e) {
@@ -266,8 +275,12 @@ function buildEntry(d: Draft): UserEntry {
   const e: UserEntry = { model: d.model.trim() }
   const provider = d.provider.trim().toLowerCase()
   if (provider) e.provider = provider
-  // 时区只在峰谷条目上有意义（一口价不判峰谷，host 侧缺省 Asia/Shanghai）
-  if (d.isPeak) e.timezone = d.timezone.trim()
+  // 时区只在峰谷条目上有意义（一口价不判峰谷）：空串绝不落盘（host schema min(1) 会拒）；
+  // 输入框隐藏（预设 provider）时显式写入内置表值——openrouter 这类 UTC 方不依赖 host 兜底上海
+  if (d.isPeak) {
+    const tz = d.timezone.trim() || autoTzOf(d.provider)
+    if (tz) e.timezone = tz
+  }
   const part = (hit: string, miss: string, output: string): PricePart => {
     const p: PricePart = { hit: toNum(hit), miss: toNum(miss), output: toNum(output) }
     return p
@@ -432,8 +445,8 @@ function BillingCard(props: { scope: any; scan?: () => Promise<CatalogModel[]> }
   }
 
   const tzFor = (provider: string): { auto: boolean; tz: string } => {
-    const p = provider.trim().toLowerCase()
-    if (p && PROVIDER_TIMEZONE[p]) return { auto: true, tz: PROVIDER_TIMEZONE[p] }
+    const auto = autoTzOf(provider)
+    if (auto) return { auto: true, tz: auto }
     return { auto: false, tz: draft?.timezone ?? 'UTC' }
   }
 

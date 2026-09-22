@@ -694,7 +694,15 @@ export function applySettings(ctx: any): void {
     tag.textContent = CSS
   }
 
-  const scope = ctx.settingsScope.bind({ namespace: SETTINGS_NS })
+  // 0.1.7 移除了客户端 settingsScope 服务：缺省时跳过设置页注册（caller 的
+  // try/catch 兜底仍在；0.1.6 上服务存在，此分支不触发，行为不变）。必须走
+  // ctx.get 软取——未声明服务的属性访问会抛 rejectGuard，可选链防不住。
+  const settingsScope = typeof ctx?.get === 'function' ? ctx.get('settingsScope') : undefined
+  if (settingsScope === undefined) {
+    console.info('[meow-cachebilling] settingsScope 服务缺失（0.1.7+），设置页未注册')
+    return
+  }
+  const scope = settingsScope.bind({ namespace: SETTINGS_NS })
 
   // DSH 模型目录扫描：借用模型选择器的同一份 RPC，目录 = settings+预置合并后的最终目录（全局投影，与会话无关）。
   // 两个构建的面不同：0.1.5-rc.1 = remote.session.modelCatalog()（无参数，rc.1 里没有 sessions.models 这个

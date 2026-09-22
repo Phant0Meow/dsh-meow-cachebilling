@@ -428,7 +428,7 @@ function costOf(sample: Sample): { hit: number; miss: number; output: number } {
 /** 平均参与窗口：最近 30 天。 */
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 
-/** 主线会话判定：DSH core 给主线会话发 `session-*` id；原生子代理是裸 UUID（SessionId(randomUUID())），femwa 投影窗等第三方衍生会话各有前缀。
+/** 主线会话判定：DSH core 给主线会话发 `session-*` id；原生子代理是裸 UUID（SessionId(randomUUID())），femo 投影窗等第三方衍生会话各有前缀。
  * 曲线统计只认主线会话——子代理与投影窗的每步模式不可比（猫猫：子代理和 proj 窗都不要算）。 */
 function isWindowSessionId(id: string): boolean {
   return id.startsWith('session-')
@@ -445,7 +445,7 @@ function historyKey(provider: string, model: string, tier: Tier | null): string 
   return `${provider.toLowerCase()}/${model.toLowerCase()}/${word}`
 }
 
-/** 单条精确步目：n=会话内第几次 API 调用（估算步也计数，只是不入库），t/s=turn/step，c=该步花费（元），m=模型键，mi=该步缓存未命中金额（元，含写入；消耗比较块的「读代码」按轮归组求和用）。 */
+/** 单条精确步目：n=会话内第几次 API 调用（估算步也计数，只是不入库），t/s=turn/step，c=该步花费（元），m=模型键，mi=该步缓存未命中金额（元，含写入），hc=该步缓存命中金额（元）。「读代码」2026-09-20 起按 miss+output=c−hc 取数，mi 已无读取方、随行保留兼容旧记录。 */
 interface HistoryStep {
   n: number
   t: number
@@ -633,7 +633,7 @@ function installHistoryRecorder(ctx: any, table: KvTable<string, HistoryRecord>)
         const record: HistoryRecord = {
           createdAt,
           updatedAt: Date.now(),
-          // 白名单必须带 mi/hc：这两列是消耗比较与平均缓存曲线的落盘数据底座（cmp-21 曾漏改此处，历史域落盘全被剥成裸四列）
+          // 白名单必须带 mi/hc：hc 是消耗比较（读代码=c−hc）与平均缓存曲线的落盘数据底座（cmp-21 曾漏改此处，历史域落盘全被剥成裸四列）；mi 已无读取方、随行保留兼容旧记录
           steps: state.history.map(({ n, t, s, c, mi, hc }) => ({ n, t, s, c, mi, hc })),
           marks: deriveMarks(state.history),
           gen,
@@ -658,7 +658,7 @@ function installHistoryRecorder(ctx: any, table: KvTable<string, HistoryRecord>)
         const archiveRecord: HistoryRecord = {
           createdAt,
           updatedAt: archive.updatedAt,
-          // 归档白名单：mi 剥离（读代码不读归档）；hc 保留（平均缓存跨代统计，与总价同权）
+          // 归档白名单：mi 剥离（读代码改按 c−hc 取数，无须此列）；hc 保留（平均缓存跨代统计，与总价同权）
           steps: archive.steps.map(({ n, t, s, c, hc }) => ({ n, t, s, c, hc })),
           marks: { ...archive.marks },
           gen: archive.gen,
@@ -830,7 +830,7 @@ interface ProjectionState {
   prevGen: {
     gen: number
     updatedAt: number
-    steps: Array<{ n: number; t: number; s: number; c: number; mi?: number }>
+    steps: Array<{ n: number; t: number; s: number; c: number; mi?: number; hc?: number }>
     marks: Record<string, string>
   } | null
 }
@@ -1213,7 +1213,7 @@ export function apply(ctx: any, _config: any): void {
               cur: z.array(z.tuple([z.number().int(), z.number()])),
             })
             .nullable(),
-          /** 消耗比较块（第三块）：readCode=前两轮缓存未命中之和（读代码）；cache=当前步命中金额（缓存）；fullMiss=当前上下文全按 miss 折算（缓存失效）。null=尚无用量样本 */
+          /** 消耗比较块（第三块）：readCode=前两轮缓存未命中与输出之和（读代码）；cache=当前步命中金额（缓存）；fullMiss=当前上下文全按 miss 折算（缓存失效）。null=尚无用量样本 */
           compare: z
             .object({
               readCode: z.number().nonnegative(),
@@ -1271,16 +1271,16 @@ export function apply(ctx: any, _config: any): void {
           const missCost = round9((s.inputTokens * row.miss + s.cacheWriteTokens * row.write) / 1e6)
           const outputCost = round9((s.outputTokens * row.output) / 1e6)
           const turn = state.turn
-          // 消耗比较块「读代码」：跨代（归档段+当前代）按轮归组，取轮序号最小的两个 turn 的 miss 之和——AI 开窗头两轮集中读代码的代价
-          const turnMiss = new Map<number, number>()
+          // 消耗比较块「读代码」：跨代（归档段+当前代）按轮归组，取轮序号最小的两个 turn 的 miss+output 之和（c=命中+未命中+输出、hc=命中，未命中+输出=c−hc）——AI 开窗头两轮集中读代码的代价
+          const turnRead = new Map<number, number>()
           for (const e of [
             ...(state.prevGen === null ? [] : state.prevGen.steps),
             ...state.history,
           ]) {
-            turnMiss.set(e.t, (turnMiss.get(e.t) ?? 0) + (e.mi ?? 0))
+            turnRead.set(e.t, (turnRead.get(e.t) ?? 0) + Math.max(0, e.c - (e.hc ?? 0)))
           }
-          const firstTurns = [...turnMiss.keys()].sort((a, b) => a - b).slice(0, 2)
-          const readCode = round9(firstTurns.reduce((sum, t) => sum + (turnMiss.get(t) ?? 0), 0))
+          const firstTurns = [...turnRead.keys()].sort((a, b) => a - b).slice(0, 2)
+          const readCode = round9(firstTurns.reduce((sum, t) => sum + (turnRead.get(t) ?? 0), 0))
           // 「缓存失效」：当前上下文全量 token（= 圆环「上下文已用」，人+AI+工具都在里面）按当前 miss 单价折算——本轮 AI 刚输出的 token 下一轮才进上下文，不预支
           const fullMiss = round9((totalInput * row.miss) / 1e6)
           return {

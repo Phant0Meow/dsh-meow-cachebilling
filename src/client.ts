@@ -411,7 +411,7 @@ function renderChart(doc: Document, put: (el: HTMLElement) => void, view: CacheB
     }
     item(
       '读代码',
-      '前两轮的所有MISS输入，AI 一般会在前两轮大量、集中地读取项目代码。这个数据衡量了你新开窗口后，AI 重读代码的消耗。',
+      '前两轮的MISS输入与输出金额之和，AI 一般会在前两轮大量、集中地读取项目代码。这个数据衡量了你新开窗口后，AI 重读代码的消耗。',
       cmp.readCode,
     )
     item('缓存', '当前每次API请求的缓存命中价格。', cmp.cache)
@@ -550,7 +550,12 @@ function CacheDataHook(props: any) {
   })
 }
 
-export const inject = ['slots', 'connection', 'sessions', 'remote', 'settingsScope', 'settingsSchema']
+// settingsScope 不进强制 inject：dsh 0.1.7 移除了该客户端服务，写进清单会让
+// 整个插件 pending（"waiting for service: settingsScope"）。官方纪律=只 inject
+// 必需服务，可选服务走 ctx.get 软取——settings.ts applySettings 顶部已有缺省
+// 守卫；0.1.6 上服务仍在（ctx.get 照常返回），行为不变。settingsSchema 在
+// 0.1.7 仍由 dsh-client-ui-settings 提供，保留。
+export const inject = ['slots', 'connection', 'sessions', 'remote', 'settingsSchema']
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any): void {

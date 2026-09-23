@@ -681,7 +681,21 @@ function BillingCard(props: { scope: any; scan?: () => Promise<CatalogModel[]> }
 
 // ── 挂载 ────────────────────────────────────────────────────────────────────
 
-export function applySettings(ctx: any): void {
+/** 可选服务软取：cordis 对未声明服务的属性访问直接抛 rejectGuard（可选链防不住），
+ *  ctx.get 不抛（缺服务返回 undefined）；无 ctx.get 的环境（含测试 mock）退回
+ *  属性读取并用 try/catch 兜住。 */
+function softService(ctx: any, name: string): any {
+  if (typeof ctx?.get === 'function') return ctx.get(name)
+  try { return ctx?.[name] } catch { return undefined }
+}
+
+/** 轮询参数（测试可注入短周期；生产默认 400ms × 75 ≈ 30s 后放弃并留日志）。 */
+export interface SettingsMountOptions {
+  pollMs?: number
+  maxPollAttempts?: number
+}
+
+export function applySettings(ctx: any, opts?: SettingsMountOptions): void {
   // 覆盖式注入：外壳重注入插件时旧 style 标签仍在 document 里，只判空插入会让升级后的新样式永远进不来
   if (typeof document !== 'undefined') {
     let tag = document.querySelector<HTMLStyleElement>(`style[data-plugin-css="${CSS_ID}"]`)
@@ -693,16 +707,6 @@ export function applySettings(ctx: any): void {
     }
     tag.textContent = CSS
   }
-
-  // 0.1.7 移除了客户端 settingsScope 服务：缺省时跳过设置页注册（caller 的
-  // try/catch 兜底仍在；0.1.6 上服务存在，此分支不触发，行为不变）。必须走
-  // ctx.get 软取——未声明服务的属性访问会抛 rejectGuard，可选链防不住。
-  const settingsScope = typeof ctx?.get === 'function' ? ctx.get('settingsScope') : undefined
-  if (settingsScope === undefined) {
-    console.info('[meow-cachebilling] settingsScope 服务缺失（0.1.7+），设置页未注册')
-    return
-  }
-  const scope = settingsScope.bind({ namespace: SETTINGS_NS })
 
   // DSH 模型目录扫描：借用模型选择器的同一份 RPC，目录 = settings+预置合并后的最终目录（全局投影，与会话无关）。
   // 两个构建的面不同：0.1.5-rc.1 = remote.session.modelCatalog()（无参数，rc.1 里没有 sessions.models 这个
@@ -782,20 +786,73 @@ export function applySettings(ctx: any): void {
     return []
   }
 
-  // 顶级分区（与「通用」「模型」「插件」平级）：list slot 契约 = id + order + label；
-  // label 直接返回中文——不挂 locale 字典（第三方字典注册在官方外壳没有席位，旧卡片形态实测注册不上）。
-  ctx.slots.inject('settings.section', () =>
-    ctx.slots.register(
-      {
-        name: 'settings.section',
-        id: SETTINGS_NS,
-        order: 30,
-        label: () => '喵缓存账单',
-        inject: (): unknown => ({ scope, scan: scanCatalog }),
-      },
-      BillingSection,
-    ),
-  )
+  // 双版本两条腿的公共挂载体：scope 由腿产出（0.1.6=settingsScope.bind 结果；
+  // 0.1.7=configForms.get(entryId) 共享表单——形状与组件吃的 scope 同构：
+  // getSnapshot 的 status/value/base/user/writable/mode、单层键 set/unset、被拒
+  // 静默 recover 回读判定，直接当 scope 用）。共享表单由 configForms 提供方持有
+  // 并随其卸载，这里不 dispose（dispose 后 forms 表仍缓存该实例，热重载拿到死表单）。
+  const mount = (scope: any): void => {
+    // 顶级分区（与「通用」「模型」「插件」平级）：list slot 契约 = id + order + label；
+    // label 直接返回中文——不挂 locale 字典（第三方字典注册在官方外壳没有席位，旧卡片形态实测注册不上）。
+    ctx.slots.inject('settings.section', () =>
+      ctx.slots.register(
+        {
+          name: 'settings.section',
+          id: SETTINGS_NS,
+          order: 30,
+          label: () => '喵缓存账单',
+          inject: (): unknown => ({ scope, scan: scanCatalog }),
+        },
+        BillingSection,
+      ),
+    )
+  }
+
+  // ── 0.1.6 腿：settingsScope 服务在，原链路不变 ─────────────────────────────
+  const settingsScope = softService(ctx, 'settingsScope')
+  if (settingsScope !== undefined) {
+    mount(settingsScope.bind({ namespace: SETTINGS_NS }))
+    return
+  }
+
+  // ── 0.1.7 腿：settingsScope 被官方移除，等 configForms 提供方就绪 ──────────
+  // configForms 不进 inject（0.1.6 无此服务，写进清单会整插件 pending），且客户端
+  // 组合顺序不保证提供方先起——短轮询等它就绪再挂页；等不到只留一行日志，
+  // 账单主体不受影响。
+  const pollMs = opts?.pollMs ?? 400
+  const maxPollAttempts = opts?.maxPollAttempts ?? 75
+  let mounted = false
+  let pollTimer: ReturnType<typeof setInterval> | undefined
+  let attempts = 0
+  const stopPoll = (): void => {
+    if (pollTimer !== undefined) {
+      clearInterval(pollTimer)
+      pollTimer = undefined
+    }
+  }
+  const attach = (): void => {
+    if (mounted) return
+    const configForms = softService(ctx, 'configForms')
+    if (configForms === undefined || typeof configForms.get !== 'function') return
+    mounted = true
+    stopPoll()
+    try {
+      mount(configForms.get(SETTINGS_NS))
+    } catch (e) {
+      console.warn('[meow-cachebilling] 设置页注册失败（不影响账单）：', e)
+    }
+  }
+  attach()
+  if (!mounted) {
+    pollTimer = setInterval(() => {
+      attach()
+      attempts += 1
+      if (!mounted && attempts >= maxPollAttempts) {
+        stopPoll()
+        console.info('[meow-cachebilling] configForms 服务未就绪（0.1.7 设置页未注册；账单不受影响）')
+      }
+    }, pollMs)
+  }
 }
 
 /** 顶级分区整页：标题 + 说明 + 价目表主体（BillingCard）。 */

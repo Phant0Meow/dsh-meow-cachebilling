@@ -24,6 +24,17 @@ export const name = 'meow-cachebilling'
 /** 设置命名空间：预填层(rates.yml)之上的用户层住这里，与设置页卡片、手编 settings.yaml 三方共用。 */
 const SETTINGS_NS = settingsNamespace('meow-cachebilling')
 
+/**
+ * 插件 Config：价目条目的开放 dict（键=「provider/model」，值=条目对象）。
+ *
+ * dsh 0.1.7 起设置服务的命名空间宇宙 = 各插件导出的 Config（describe 只读
+ * entry.fiber.runtime.Config，register/installSection 均已移除）——不导出它，
+ * 「喵缓存账单」标签页在 0.1.7 上连命名空间都拿不到。dict(any)：键集开放
+ * （用户自定义条目），值形状不设防，坏条目由 recompileMerged 逐键回落预填。
+ * base/预填视图由构建期生成的 cordis.patch.yml config 段供给（= rates.yml）。
+ */
+export const Config = sz.dict(sz.any())
+
 /** 必需服务：sessionProjections 由 @deepseek-ai/dsh-session-projection 提供，storageDomain 由 @deepseek-ai/dsh-storage-domain 提供（每步花费历史的落盘层），sessionPersistence 供旧记录迁移读日志。 */
 export const inject = ['sessionProjections', 'storageDomain', 'sessionPersistence']
 
@@ -1333,31 +1344,80 @@ export function apply(ctx: any, _config: any): void {
   })
 
   // ── 设置命名空间：双层价目表的用户层 ──
-  // base = 预填层（rates.yml），user = 设置页/手编 settings.yaml；field 级覆盖，unset 回落预填。
-  // scope.watch → onChange → 重编译合成层：设置页改价目即时生效，无需重启。
+  // base = 预填层（rates.yml，构建期生成进 cordis.patch.yml 的组合层——0.1.7 的设置
+  // 页 base 视图读的就是它），user = 设置页/手编 settings.yaml；field 级覆盖，unset 回落预填。
+  // 0.1.6 上 scope.watch → onChange → 重编译合成层：设置页改价目即时生效，无需重启。
   let currentGetter: () => unknown = (): unknown => PREFILL_RAW
   const recompile = (): void => {
     recompileMerged(currentGetter())
   }
-  try {
-    installSettingsSection(ctx, SETTINGS_NS, sz.dict(sz.any()), PREFILL_RAW, {
-      // RPC 写入的严格校验：任何一条编不过就拒写（手编 settings.yaml 不走这里，由 recompile 防御性回落兜底）
-      validate: (value: unknown): void => {
-        for (const [key, item] of Object.entries(value as Record<string, RawEntry>)) {
-          const r = compileEntry(item as RawEntry, `settings · ${key}`)
-          if (!r.ok) throw new Error(`条目 ${key}：${r.error}`)
+  // dsh 0.1.7 起设置服务只剩 describe/update/mutate（register/installSection 均被移除），
+  // bundled 旧 installSettingsSection 会在 ctx.inject 回调里异步炸掉——外面 try/catch
+  // 够不着，只能静默失败。故按服务能力在回调内分流：
+  ctx.inject(['settings'], (sctx: { settings: unknown }) => {
+    const settings = sctx.settings as {
+      register?: (ns: string, schema: unknown, opts: { base: unknown; validate?: (v: unknown) => void }) =>
+        { get: () => unknown; watch: (cb: () => void) => unknown }
+      describe?: () => Array<{ ns: string; user?: unknown }>
+    }
+    // ── dsh ≤0.1.6：register 还在，bundled 旧链路原样（register + watch 即时生效）──
+    if (typeof settings.register === 'function') {
+      try {
+        installSettingsSection(ctx, SETTINGS_NS, sz.dict(sz.any()), PREFILL_RAW, {
+          // RPC 写入的严格校验：任何一条编不过就拒写（手编 settings.yaml 不走这里，由 recompile 防御性回落兜底）
+          validate: (value: unknown): void => {
+            for (const [key, item] of Object.entries(value as Record<string, RawEntry>)) {
+              const r = compileEntry(item as RawEntry, `settings · ${key}`)
+              if (!r.ok) throw new Error(`条目 ${key}：${r.error}`)
+            }
+          },
+          setSource: (get: () => unknown): void => {
+            currentGetter = get
+          },
+          onChange: (): void => {
+            recompile()
+          },
+        })
+      } catch (e) {
+        console.warn('[meow-cachebilling] 设置命名空间注册失败（账单继续使用预填层）：', e)
+      }
+      return
+    }
+    // ── dsh 0.1.7：宿主自管合成（预填 ⊕ describe().user）──
+    // RPC 写入不再有 validate 闸（服务端 schema=dict(any)），坏条目由 recompileMerged
+    // 逐键回落预填，与手编 settings.yaml 的防线同一道。变更感知：document-updated 事件
+    // 能收到就即时重编译；事件面不可达时靠 15s 兜底轮询（快照串比对，无变化零动作）。
+    currentGetter = (): unknown => {
+      try {
+        const desc = settings.describe?.().find((d) => d.ns === SETTINGS_NS)
+        const user = (desc?.user ?? {}) as Record<string, RawEntry>
+        return { ...PREFILL_RAW, ...user }
+      } catch {
+        return PREFILL_RAW
+      }
+    }
+    recompile()
+    try {
+      ctx.on('settings/document-updated', (ns: string) => {
+        if (ns === SETTINGS_NS) recompile()
+      })
+    } catch {
+      /* 事件面不可达就走轮询 */
+    }
+    let lastRaw = ''
+    const poll = setInterval(() => {
+      try {
+        const raw = JSON.stringify(currentGetter())
+        if (raw !== lastRaw) {
+          lastRaw = raw
+          recompile()
         }
-      },
-      setSource: (get: () => unknown): void => {
-        currentGetter = get
-      },
-      onChange: (): void => {
-        recompile()
-      },
-    })
-  } catch (e) {
-    console.warn('[meow-cachebilling] 设置命名空间注册失败（账单继续使用预填层）：', e)
-  }
+      } catch {
+        /* 轮询失败静默，下个周期再试 */
+      }
+    }, 15_000)
+    ctx.effect(() => () => clearInterval(poll), 'meow-cachebilling.settings-017-poll')
+  })
 
   // ── 每步花费历史：开域 + 录盘（曲线块的数据底座，失败只降级不炸）──
   ctx.storageDomain

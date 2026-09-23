@@ -545,22 +545,23 @@ function CacheDataHook(props: any) {
 
   return React.createElement('span', {
     'data-meow-cachebilling': 'hook',
-    'data-meowcb-version': 'cmp-33',
+    'data-meowcb-version': 'cmp-34',
     style: { display: 'none' },
   })
 }
 
-// settingsScope 不进强制 inject：dsh 0.1.7 移除了该客户端服务，写进清单会让
-// 整个插件 pending（"waiting for service: settingsScope"）。官方纪律=只 inject
-// 必需服务，可选服务走 ctx.get 软取——settings.ts applySettings 顶部已有缺省
-// 守卫；0.1.6 上服务仍在（ctx.get 照常返回），行为不变。settingsSchema 在
-// 0.1.7 仍由 dsh-client-ui-settings 提供，保留。
+// settingsScope / configForms 都不进强制 inject：两者都是可选服务（0.1.6 只有
+// settingsScope，0.1.7 只有 configForms），写进清单会让缺它的那一版整个插件
+// pending（"waiting for service: …"）。官方纪律=只 inject 必需服务，可选服务走
+// ctx 软取——applySettings 双腿软取（0.1.6 走 settingsScope.bind，0.1.7 短轮询等
+// configForms 提供方就绪后 get(命名空间) 当 scope），缺服务只降级不阻断。
+// settingsSchema 两版都由 dsh-client-ui-settings 提供，保留。
 export const inject = ['slots', 'connection', 'sessions', 'remote', 'settingsSchema']
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any): void {
   // 版本标记：排障用，每次改动 bump——rev 滞后时看控制台标记就知道浏览器跑的是哪一版
-  console.log('[meow-cachebilling] client bundle: cmp-33')
+  console.log('[meow-cachebilling] client bundle: cmp-34')
   // 覆盖式注入：外壳重注入插件时旧 style 标签仍在 document 里，只判空插入会让升级后的新样式永远进不来
   if (typeof document !== 'undefined') {
     let tag = document.querySelector<HTMLStyleElement>(`style[data-plugin-css="${CSS_ID}"]`)

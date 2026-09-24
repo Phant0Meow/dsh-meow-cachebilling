@@ -19,6 +19,7 @@
  */
 
 import * as React from 'react'
+import { PREFILL_RATES } from './prefill.gen'
 
 const SETTINGS_NS = 'meow-cachebilling'
 const CSS_ID = 'meow-cachebilling-settings-css'
@@ -365,7 +366,12 @@ function BillingCard(props: { scope: any; scan?: () => Promise<CatalogModel[]> }
     refreshCatalog()
   }, [refreshCatalog])
 
-  const base = snap.base ?? {}
+  // 预填层双保险：host base（0.1.6=installSettingsSection 传的运行时 rates.yml；
+  // 0.1.7=schema 默认深填——dict(any) 根声明不了按键默认，恒空）打不上来的部分
+  // 由 client 自带的编译期快照兜住（prefill.gen.ts，build 从 rates.yml 再生成，
+  // 与 cordis.patch.yml 同步换代）。host base 在场时优先：0.1.6 手改 rates.yml
+  // 重启后，显示跟运行时走。
+  const base = { ...(PREFILL_RATES as EntryMap), ...(snap.base ?? {}) }
   const user = snap.user ?? {}
   const keys = Array.from(new Set([...Object.keys(base), ...Object.keys(user)]))
 
@@ -406,9 +412,18 @@ function BillingCard(props: { scope: any; scan?: () => Promise<CatalogModel[]> }
     setBusy(true)
     try {
       const r = await scope.set(key, entry)
-      const bad = r && r.result && r.result.ok === false ? r.result.error?.message : null
+      // 0.1.6 settingsScope 回 {result:{ok,error}}；0.1.7 configForms 回 boolean
+      //（false=宿主拒收且详情被吞）。false 必须亮红字——否则被拒写成假成功，
+      // 行徽章纹丝不动，用户以为存上了（2026-09-25 探针实证过的静默失败）。
+      const bad =
+        r === false
+          ? '宿主拒收本次写入（重启页面后重试；反复失败看浏览器控制台 [meow-cachebilling] 取证行）'
+          : r && r.result && r.result.ok === false
+            ? r.result.error?.message
+            : null
       if (bad) {
         setError(`保存被拒绝：${bad}`)
+        console.warn('[meow-cachebilling] settings 写入被宿主拒收：', key)
         return
       }
       setExpanded(null)
@@ -423,7 +438,11 @@ function BillingCard(props: { scope: any; scan?: () => Promise<CatalogModel[]> }
   const remove = async (key: string): Promise<void> => {
     setBusy(true)
     try {
-      await scope.unset(key)
+      const r = await scope.unset(key)
+      if (r === false) {
+        setError('恢复预填被宿主拒收，请重试（反复失败看浏览器控制台）。')
+        return
+      }
       setExpanded(null)
       setDraft(null)
     } catch (e) {

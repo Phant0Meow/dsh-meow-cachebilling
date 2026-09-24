@@ -3,10 +3,12 @@
  *
  * settings.ts 只 import react（挂载本身不渲染），用 React 桩 esbuild 打包后直跑：
  * 锁死软取分腿、命名空间传参、scope/scan 注入、configForms 就绪前轮询等待、
- * 双缺安全降级、dispose/计时器清理。运行：node tests/settings-mount.mjs
+ * 双缺安全降级、dispose/计时器清理；末两节展开组件树渲染 BillingCard，
+ * 锁死预填快照兜底（0.1.7 上 host base 恒空，价目表必须照常显示）。
+ * 运行：node tests/settings-mount.mjs
  */
 import { build } from 'esbuild'
-import { rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 
 const reactStub = `
 export function createElement(type, props, ...children) {
@@ -14,6 +16,9 @@ export function createElement(type, props, ...children) {
 }
 export function useCallback(fn) { return fn }
 export function useState(init) { return [init, () => {}] }
+export function useRef(init) { return { current: init } }
+export function useEffect() {}
+export function cloneElement(el, props) { return { ...el, props: { ...el.props, ...props } } }
 export function useSyncExternalStore(subscribe, getSnapshot) { return getSnapshot() }
 export const __stub = true
 `
@@ -104,6 +109,48 @@ function makeFormStub() {
   }
 }
 
+/** rates.yml 里的模型名清单（断言渲染结果用，与预填快照同源）。 */
+function ratesModelNames() {
+  const yaml = readFileSync(new URL('../rates.yml', import.meta.url), 'utf8')
+  return [...yaml.matchAll(/^\s*-\s*model:\s*(\S+)\s*$/gm)].map((m) => m[1])
+}
+
+/** 展开 React 桩树：createElement 只存 type 函数，手动逐层调用展开成纯元素树。 */
+function renderTree(component, props, maxDepth = 8) {
+  const walk = (node, depth) => {
+    if (node === null || node === undefined || typeof node !== 'object') return node
+    if (Array.isArray(node)) return node.flatMap((n) => walk(n, depth))
+    if (typeof node.type === 'function') {
+      if (depth >= maxDepth) return null
+      return walk(node.type(node.props), depth + 1)
+    }
+    const children = node.children
+    return {
+      ...node,
+      children: Array.isArray(children) ? children.flatMap((c) => walk(c, depth)) : children,
+    }
+  }
+  return walk(component(props), 0)
+}
+
+/** 收集渲染树里的全部可见文本（字符串/数字孩子）。 */
+function collectText(node, out = []) {
+  if (node === null || node === undefined) return out
+  if (typeof node === 'string' || typeof node === 'number') {
+    out.push(String(node))
+    return out
+  }
+  if (Array.isArray(node)) {
+    for (const child of node) collectText(child, out)
+    return out
+  }
+  if (typeof node !== 'object') return out
+  const children = node.children
+  if (Array.isArray(children)) for (const child of children) collectText(child, out)
+  else if (children !== undefined && children !== null) collectText(children, out)
+  return out
+}
+
 console.log('=== 1. 0.1.6 腿（settingsScope.bind 原链路）===')
 {
   const bound = { subscribe: () => () => {}, getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, writable: true, mode: 'user' }), set: async () => {}, unset: async () => {} }
@@ -155,6 +202,51 @@ console.log('=== 4. 0.1.7 腿（configForms 迟到）：轮询等到即挂页 ==
   check('configForms 就绪后轮询挂页', registrations.length >= 1 && registrations[registrations.length - 1].options.inject().scope === form, String(registrations.length))
   await sleep(20)
   check('挂页后轮询停止（不重复注册）', registrations.length === 1, String(registrations.length))
+}
+
+console.log('=== 5. 预填快照兜底：host base 恒空（0.1.7 dict 根）价目表照常渲染 ===')
+{
+  const form = {
+    subscribe: () => () => {},
+    getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, writable: true, revision: 1, mode: 'host' }),
+    set: async () => true,
+    unset: async () => true,
+  }
+  const { registrations, slots } = makeSlots()
+  const ctx = ctxWithGet({ configForms: { get: () => form } }, slots)
+  settings.applySettings(ctx)
+  const { options, component } = registrations[registrations.length - 1]
+  const lines = collectText(renderTree(component, options.inject()))
+  // rates.yml 的每条模型都必须出现在渲染结果里（预填快照兜住空 base）
+  const missing = ratesModelNames().filter((m) => !lines.some((t) => String(t).includes(m)))
+  check('rates.yml 全部模型名可见', missing.length === 0, `missing=${JSON.stringify(missing)} lines=${JSON.stringify(lines.slice(0, 8))}`)
+  check('「添加条目」按钮在场（页面结构完整）', lines.includes('添加条目'))
+}
+
+console.log('=== 6. host base 在场：与快照合并（host 条目 + 预填条目同屏）===')
+{
+  const form = {
+    subscribe: () => () => {},
+    getSnapshot: () => ({
+      status: 'ready',
+      value: {},
+      base: { 'custom/lake': { model: 'lake-model', provider: 'custom' } },
+      user: {},
+      writable: true,
+      revision: 1,
+      mode: 'user',
+    }),
+    set: async () => true,
+    unset: async () => true,
+  }
+  const { registrations, slots } = makeSlots()
+  const ctx = ctxWithGet({ configForms: { get: () => form } }, slots)
+  settings.applySettings(ctx)
+  const { options, component } = registrations[registrations.length - 1]
+  const lines = collectText(renderTree(component, options.inject()))
+  check('host base 条目可见', lines.some((t) => String(t).includes('lake-model')), JSON.stringify(lines.slice(0, 8)))
+  const missing = ratesModelNames().filter((m) => !lines.some((t) => String(t).includes(m)))
+  check('预填快照条目仍可见（合并而非替换）', missing.length === 0, `missing=${JSON.stringify(missing)}`)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

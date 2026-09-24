@@ -4,6 +4,37 @@
  * （entryKey，与 host 预填层/设置页 user 层同一命名空间）。
  */
 export const PREFILL_RATES: Record<string, unknown> = {
+  "deepseek-official/deepseek-v4.1-flash": {
+    "model": "deepseek-v4.1-flash",
+    "provider": "deepseek-official",
+    "timezone": "Asia/Shanghai",
+    "peak": {
+      "hit": 0.04,
+      "miss": 2,
+      "output": 8,
+      "when": [
+        {
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "ranges": [
+            "09:00-12:00",
+            "14:00-18:00"
+          ]
+        }
+      ]
+    },
+    "valley": {
+      "hit": 0.02,
+      "miss": 1,
+      "output": 4
+    },
+    "cacheSaving": null
+  },
   "deepseek-official/deepseek-v4-flash": {
     "model": "deepseek-v4-flash",
     "provider": "deepseek-official",
@@ -97,12 +128,43 @@ export const PREFILL_RATES: Record<string, unknown> = {
     },
     "cacheSaving": null
   },
+  "deepseek-official/deepseek-v4-pro-0813": {
+    "model": "deepseek-v4-pro-0813",
+    "provider": "deepseek-official",
+    "timezone": "Asia/Shanghai",
+    "peak": {
+      "hit": 0.3,
+      "miss": 9,
+      "output": 27,
+      "when": [
+        {
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "ranges": [
+            "09:00-12:00",
+            "14:00-18:00"
+          ]
+        }
+      ]
+    },
+    "valley": {
+      "hit": 0.15,
+      "miss": 4.5,
+      "output": 13.5
+    },
+    "cacheSaving": null
+  },
   "zai-coding-cn/glm-5.3": {
     "model": "glm-5.3",
     "provider": "zai-coding-cn",
     "timezone": "Asia/Shanghai",
     "const": {
-      "hit": 0,
+      "hit": 2,
       "miss": 8,
       "output": 28
     },
@@ -113,7 +175,7 @@ export const PREFILL_RATES: Record<string, unknown> = {
     "provider": "zai-coding-cn",
     "timezone": "Asia/Shanghai",
     "const": {
-      "hit": 0,
+      "hit": 2,
       "miss": 8,
       "output": 28
     },
@@ -124,9 +186,9 @@ export const PREFILL_RATES: Record<string, unknown> = {
     "provider": "zai-coding-cn",
     "timezone": "Asia/Shanghai",
     "const": {
-      "hit": 0.115,
-      "miss": 0.4,
-      "output": 1.4
+      "hit": 0.23,
+      "miss": 0.8,
+      "output": 2.8
     },
     "cacheSaving": null
   }

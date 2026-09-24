@@ -15,7 +15,26 @@
 # 改完重启 dsh web 生效。条目非法会被跳过（控制台有警告），文件整体损坏则回退内置默认表——不会弄崩 DSH。
 
 models:
-  # ── DeepSeek（2026-09-10 12:00 刊例：flash 系列降价，峰=谷×2，周末全天谷）──
+  # ── DeepSeek（2026-09-25 核对 api-docs.deepseek.com/zh-cn/quick_start/pricing）──
+  # 高峰=北京时间周一至五 9:00-12:00、14:00-18:00，闲时=高峰减半、周末全天谷。
+  # 主力条目：V4.1-Flash（9 月中旬上线，旧 deepseek-v4-flash 名已下线、旧调用
+  # 仍由 Flash 按 Flash 价服务——旧名条目随行保留，账不断）。
+  - model: deepseek-v4.1-flash
+    provider: deepseek-official
+    timezone: Asia/Shanghai
+    peak:
+      hit: 0.04
+      miss: 2
+      output: 8
+      when:
+        - days: [mon, tue, wed, thu, fri]
+          ranges: ["09:00-12:00", "14:00-18:00"]
+    valley:
+      hit: 0.02
+      miss: 1
+      output: 4
+    cacheSaving: null
+
   - model: deepseek-v4-flash
     provider: deepseek-official
     timezone: Asia/Shanghai
@@ -32,6 +51,7 @@ models:
       output: 4
     cacheSaving: null
 
+  # 旧视觉变体：V4.1-Flash 原生带视觉后疑似退役；条目闲置无害，留作老路由兜底
   - model: deepseek-v4-flash-vision-exp
     provider: deepseek-official
     timezone: Asia/Shanghai
@@ -64,13 +84,30 @@ models:
       output: 13.5
     cacheSaving: null
 
-  # ── 智谱 GLM（2026-08-30 刊例，bigmodel.cn/pricing；一口价，无峰谷）──
-  # glm-5.3 / glm-5.2：缓存命中限时免费（原价 2 元/百万），恢复收费后把 hit 改回 2
+  # pro 的 0813 版本号别名：API 若回报全名（deepseek-v4-pro-0813），精确匹配用它
+  - model: deepseek-v4-pro-0813
+    provider: deepseek-official
+    timezone: Asia/Shanghai
+    peak:
+      hit: 0.3
+      miss: 9
+      output: 27
+      when:
+        - days: [mon, tue, wed, thu, fri]
+          ranges: ["09:00-12:00", "14:00-18:00"]
+    valley:
+      hit: 0.15
+      miss: 4.5
+      output: 13.5
+    cacheSaving: null
+
+  # ── 智谱 GLM（2026-09-25 核对 open.bigmodel.cn/pricing；一口价，无峰谷）──
+  # 5.3 / 5.2：缓存命中已恢复收费 2 元（曾经的命中限时免费已结束）
   - model: glm-5.3
     provider: zai-coding-cn
     timezone: Asia/Shanghai
     const:
-      hit: 0
+      hit: 2
       miss: 8
       output: 28
     cacheSaving: null
@@ -79,17 +116,18 @@ models:
     provider: zai-coding-cn
     timezone: Asia/Shanghai
     const:
-      hit: 0
+      hit: 2
       miss: 8
       output: 28
     cacheSaving: null
 
-  # glm-5.3-flash：限时五折（原价 miss 0.8 / output 2.8 / hit 0.23），到期请改回原价
+  # glm-5.3-flash：五折（0.115/0.4/1.4）已到期，回标准价；
+  # 官方若复活五折，改回 hit 0.115 / miss 0.4 / output 1.4
   - model: glm-5.3-flash
     provider: zai-coding-cn
     timezone: Asia/Shanghai
     const:
-      hit: 0.115
-      miss: 0.4
-      output: 1.4
+      hit: 0.23
+      miss: 0.8
+      output: 2.8
     cacheSaving: null

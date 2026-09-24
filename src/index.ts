@@ -130,31 +130,33 @@ const entrySchema = z.object({
 type RawEntry = z.infer<typeof entrySchema>
 const ratesFileSchema = z.object({ models: z.array(entrySchema) })
 
-/** 内置默认价目表（rates.yml 缺失/损坏时的兜底）：DeepSeek 官方 2026-08-17 峰谷刊例，周六日全天谷。 */
+/** 内置默认价目表（rates.yml 缺失/损坏时的兜底）：DeepSeek 官方峰谷刊例（2026-09-25 按
+ * api-docs.deepseek.com/quick_start/pricing 核对；peak=谷×2，周末全天谷）。模型名沿用
+ * deepseek-v4-flash——FALLBACK_ENTRY 按它检索，勿改；它只做「未知模型估算」的价，不看名。 */
 const RATE_DEFAULTS_RAW = {
   models: [
     {
       model: 'deepseek-v4-flash',
       timezone: 'Asia/Shanghai',
       peak: {
-        hit: 0.1,
-        miss: 3,
-        output: 9,
+        hit: 0.04,
+        miss: 2,
+        output: 8,
         when: [{ days: ['mon', 'tue', 'wed', 'thu', 'fri'], ranges: ['09:00-12:00', '14:00-18:00'] }],
       },
-      valley: { hit: 0.05, miss: 1.5, output: 4.5 },
+      valley: { hit: 0.02, miss: 1, output: 4 },
       cacheSaving: null,
     },
     {
       model: 'deepseek-v4-flash-vision-exp',
       timezone: 'Asia/Shanghai',
       peak: {
-        hit: 0.1,
-        miss: 3,
-        output: 9,
+        hit: 0.04,
+        miss: 2,
+        output: 8,
         when: [{ days: ['mon', 'tue', 'wed', 'thu', 'fri'], ranges: ['09:00-12:00', '14:00-18:00'] }],
       },
-      valley: { hit: 0.05, miss: 1.5, output: 4.5 },
+      valley: { hit: 0.02, miss: 1, output: 4 },
       cacheSaving: null,
     },
     {

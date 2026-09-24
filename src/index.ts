@@ -32,8 +32,16 @@ const SETTINGS_NS = settingsNamespace('meow-cachebilling')
  * 「喵缓存账单」标签页在 0.1.7 上连命名空间都拿不到。dict(any)：键集开放
  * （用户自定义条目），值形状不设防，坏条目由 recompileMerged 逐键回落预填。
  * base/预填视图由构建期生成的 cordis.patch.yml config 段供给（= rates.yml）。
+ *
+ * 0.1.7 describe 还要过 volatileForm 根检查：meta.volatile 不标=整个插件不进
+ * 命名空间名单（设置页会显示误导性的「仅本机回环连接可编辑」）。仓内
+ * schemastery@3.18.1 的解析不含 volatile 逻辑——meta 只是宿主侧标记，config 值
+ * 保持裸形状（官方新版 .volatile() 会把值包成 .get() 引用），消费端零改动；
+ * 升级依赖须重验此假设。
  */
-export const Config = sz.dict(sz.any())
+const config = sz.dict(sz.any())
+Object.assign(config.meta, { volatile: true })
+export const Config = config
 
 /** 必需服务：sessionProjections 由 @deepseek-ai/dsh-session-projection 提供，storageDomain 由 @deepseek-ai/dsh-storage-domain 提供（每步花费历史的落盘层），sessionPersistence 供旧记录迁移读日志。 */
 export const inject = ['sessionProjections', 'storageDomain', 'sessionPersistence']

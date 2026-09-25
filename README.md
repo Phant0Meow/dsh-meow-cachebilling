@@ -99,7 +99,8 @@ AI需要重读代码的miss输入（可以通过fork减少这项成本）。
 
 点开输入框右侧的上下文圆环，弹层底部就是账单：
 
-![效果预览](docs/效果预览.webp)
+<img width="131" height="227" alt="image" src="https://github.com/user-attachments/assets/8329a70e-4e73-4892-aaf4-69c85661c186" />
+
 
 数字为示意，实际按你的用量与时刻费率计算。
 

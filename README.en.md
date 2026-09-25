@@ -74,6 +74,9 @@ But it really does save money...
 
 ## Features
 
+<img width="131" height="227" alt="image" src="https://github.com/user-attachments/assets/0e479122-87eb-45f0-b976-a9e0a6d3942f" />
+
+
 - **Third-party relays welcome**: not limited to the official DeepSeek route — official routes price exactly off the rate card; any relay that reports usage gets billed too. Models on the rate card price off the card (peak/valley or flat); unmatched ones estimate at flash rates with an "estimate" tag in the bill. Routes with no provider at all stay hidden.
 - **Visual rate-card editor**: a dedicated "Meow Cache Billing" tab in the settings page (sibling of General / Models) — add, edit, or restore prefill entries, effective immediately without a restart. `rates.yml` at the package root is the shipped prefill layer (provider/model exactly as the API reports them, peak/valley (days × ranges cross product) or flat `const`, timezone per provider billing zone (IANA name)); editing it needs a `dsh web` restart. Broken entries are skipped with a console warning — it can never crash DSH.
 - **The bill lives in the context menu**: click the context ring beside the composer and the bill sits at the bottom of its panel, right next to "how much context is used"

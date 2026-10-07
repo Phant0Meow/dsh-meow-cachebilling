@@ -81,6 +81,8 @@ interface UserEntry {
   peak?: PricePart & { when: WhenGroup[] }
   valley?: PricePart
   const?: PricePart
+  /** true = 峰谷判定扣除中国法定节假日（假日全天谷，数据自动取自 holiday-cn） */
+  holidays?: boolean
   cacheSaving?: string | number | null
 }
 type EntryMap = Record<string, UserEntry>
@@ -210,6 +212,8 @@ interface Draft {
   valleyHit: string
   valleyMiss: string
   valleyOutput: string
+  /** 峰谷条目：扣除中国法定节假日（假日全天谷）；一口价条目无意义不落盘 */
+  holidays: boolean
   cacheSaving: string
 }
 
@@ -230,6 +234,7 @@ function draftFromEntry(e: UserEntry): Draft {
     valleyHit: e.valley ? String(e.valley.hit) : NUM,
     valleyMiss: e.valley ? String(e.valley.miss) : NUM,
     valleyOutput: e.valley ? String(e.valley.output) : NUM,
+    holidays: e.holidays === true,
     cacheSaving: e.cacheSaving == null ? '' : String(e.cacheSaving),
   }
 }
@@ -248,6 +253,7 @@ const emptyDraft = (): Draft => ({
   valleyHit: NUM,
   valleyMiss: NUM,
   valleyOutput: NUM,
+  holidays: false,
   cacheSaving: '',
 })
 
@@ -289,6 +295,8 @@ function buildEntry(d: Draft): UserEntry {
   if (d.isPeak) {
     e.peak = { ...part(d.peakHit, d.peakMiss, d.peakOutput), when: parseWhenText(d.whenText) }
     e.valley = part(d.valleyHit, d.valleyMiss, d.valleyOutput)
+    // 假日扣除只对峰谷条目有意义；未勾选不落字段（undefined = 纯星期判定）
+    if (d.holidays) e.holidays = true
   } else {
     e.const = part(d.flatHit, d.flatMiss, d.flatOutput)
   }
@@ -554,6 +562,16 @@ function BillingCard(props: { scope: any; scan?: () => Promise<CatalogModel[]> }
                 el(PriceInputs, { d: draft, set, mode: 'peak' }),
                 el('div', { className: 'meowcb_set_section' }, '谷价'),
                 el(PriceInputs, { d: draft, set, mode: 'valley' }),
+                el(
+                  'label',
+                  { className: 'meowcb_set_check' },
+                  el('input', {
+                    type: 'checkbox',
+                    checked: draft.holidays,
+                    onChange: (e: any) => set({ holidays: e.target.checked }),
+                  }),
+                  el('span', null, '扣中国法定节假日（假日全天按谷价，数据自动取自 holiday-cn）'),
+                ),
               )
             : el(PriceInputs, { d: draft, set, mode: 'flat' }),
           error ? el('div', { className: 'meowcb_set_err' }, error) : null,

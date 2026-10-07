@@ -82,10 +82,10 @@ But it really does save money...
 - **The bill lives in the context menu**: click the context ring beside the composer and the bill sits at the bottom of its panel, right next to "how much context is used"
 - **Three timing tiers in one borderless table**: rows for current API call, current turn and session total, with a dedicated total column (the currency unit is noted once in the header), followed by cache-hit, cache-miss and output columns
 - **Session total**: the whole session is priced call by call at each call's own peak/valley rate. Two per-call counters, both derived from the usage fields the API returns — "cache invalidations": the call reported cache-write tokens (a write means the prefix changed and the old cache was invalidated; the official API doesn't report this field, only some relays do); "full misses": the call had input but zero cache hit (derived from the reported hit count; a session's first call, with nothing to hit yet, counts too)
-- **Automatic peak/off-peak pricing**: weekday peak hours (Beijing time 09:00–12:00 / 14:00–18:00) bill at peak rates; all other hours plus Saturdays and Sundays bill at half-price valley rates — independent of your system timezone, computed purely from event time. The tier is noted in the small model-info line under the "当前模型统计" heading: 梁文峰/梁文谷 on official DeepSeek routes, plain "peak/valley" elsewhere; const (flat-rate) entries get no tier tag
-- **Per-model pricing**: V4 Flash / V4 Pro / V4 Flash Vision Exp differ; each call is priced by the model that actually served it
+- **Automatic peak/off-peak pricing**: weekday peak hours (Beijing time 09:00–12:00 / 14:00–18:00) bill at peak rates; all other hours plus Saturdays and Sundays bill at half-price valley rates — independent of your system timezone, computed purely from event time. Peak/valley entries can deduct Chinese statutory holidays (`holidays: true`, pre-checked on shipped entries): holiday dates (Beijing calendar) bill at valley rates all day, matching the official pricing footnote (2) — holiday data is fetched automatically from the open-source [holiday-cn](https://github.com/NateScarlet/holiday-cn) project (tracks State Council announcements, keyless); when unreachable, pricing falls back to the weekday-only rule and never blocks the billing path. The tier is noted in the small model-info line under the "当前模型统计" heading: 梁文峰/梁文谷 on official DeepSeek routes, plain "peak/valley" elsewhere; const (flat-rate) entries get no tier tag
+- **Per-model pricing**: `deepseek-flash` (DeepSeek-V4.1-Flash) and `deepseek-v4-pro` (DeepSeek-V4-Pro-0813) differ; each call is priced by the model that actually served it. Legacy model names stay on the card so old routes/records keep matching
 - **Readable amounts**: adaptive precision — below 0.01 the amount is rounded to one significant figure, so tiny fractions like 0.005 or 0.0003 stay visible; at 0.01 and above it is rounded to the cent
-- **Average cost curve**: the plugin keeps each session's per-step real cost (only steps priced off the rate card; a model tag is written only when the model or peak/valley changes) and aggregates an average cumulative curve for the current model across the last 30 days of sessions, plotted with the current session's actual cumulative spend on one chart — slow at first, then steep, roughly quadratic — so you can switch the window or compress context before costs take off
+- **Average cost curve**: the plugin keeps each session's per-step real cost (only steps priced off the rate card; a model tag is written only when the model or peak/valley changes) and aggregates an average cumulative curve for the current model across the last 30 days of sessions, plotted with the current session's actual cumulative spend on one chart — slow at first, then steep, roughly quadratic — so you can switch the window or compress context before costs take off. Curve buckets merge legacy data: records saved under the old model names or the other official route (api-key vs account login) fold into the canonical `deepseek-flash` buckets at read time, no migration needed
 - **Two data sections beside the chart**: the curve shrinks into the left half, the right half holds two sections — "cost comparison": reading code (cache-miss + output total of the first two turns: AI reads the project heavily in its first two turns, so this measures the re-reading cost of a fresh window), cache (cache-hit cost of the current API call), and cache invalidated (the whole current context priced as if every token missed the cache); and "cache": full-miss count, plus cache-time estimate and current invalidation likelihood (placeholder, to be implemented). Labels explain themselves on hover on desktop; phones and touch devices show the same data without hover explanations
 
 ## Install
@@ -103,13 +103,13 @@ Restart `dsh web` after installing. Zero configuration.
 | Cache | cacheRead tokens this round × hit price |
 | Miss | (missed input + cache write) × miss price |
 | Output | output tokens × output price |
-| Window | weekdays 09:00–12:00 / 14:00–18:00 are peak; everything else (incl. weekends) is valley |
+| Window | weekdays 09:00–12:00 / 14:00–18:00 are peak; everything else (incl. weekends and Chinese statutory holidays) is valley |
 
-Built-in price table (CNY per million tokens, official rate card of 2026-08-17):
+Built-in price table (CNY per million tokens, official rate card of 2026-10-07):
 
 | Model | Peak (hit/miss/output) | Valley |
 |---|---|---|
-| deepseek-v4-flash | 0.1 / 3 / 9 | 0.05 / 1.5 / 4.5 |
+| deepseek-flash | 0.04 / 2 / 8 | 0.02 / 1 / 4 |
 | deepseek-v4-pro | 0.3 / 9 / 27 | 0.15 / 4.5 / 13.5 |
 
 Data source: `usage.cacheReadTokens` (`prompt_cache_hit_tokens` in DeepSeek's API). This plugin is a local estimate; actual billing is up to your DeepSeek invoice.

@@ -5,9 +5,11 @@
  *
  * 一轮的定义：每次请求大模型 API 算一轮。人类说话之后 AI 可能多次调用工具，工具结果又返回给大模型请求 API，每次请求算一轮。会话事件流中即 turn 和 step：同一 step 的 chunk 流式样本被 assistant/message 最终样本替换，官方 token-meter 同款替换语义；新 step 出现即覆盖上一轮，只显示当前步。turn 是一个用户消息内的多步合计，切换用户消息时重置。
  *
- * 价目表：包根 rates.yml（可手填，重启生效）。条目三选一：peak+valley（valley 自动取 peak 的补集）或 const（一口价）；when = days × ranges 叉乘，start 含、end 不含。timezone 是计费方账单时区（IANA 名），峰谷判定用 Intl 从事件时间戳取条目时区的星期与时分，不碰系统本地时区（本机系统时间不可信，红线）。
+ * 价目表：包根 rates.yml（可手填，重启生效）。条目三选一：peak+valley（valley 自动取 peak 的补集）或 const（一口价）；when = days × ranges 叉乘，start 含、end 不含。timezone 是计费方账单时区（IANA 名），峰谷判定用 Intl 从事件时间戳取条目时区的星期与时分，不碰系统本地时区（本机系统时间不可信，红线）。peak/valley 条目可加 holidays: true 扣除中国法定节假日（假日全天谷，北京日期口径，数据自动取自 holiday-cn，取不到退回纯星期判定）。
  *
- * 模型匹配：provider 限定条目优先于通配条目，各自内部精确→后缀，大小写不敏感；未命中任何条目按内置 deepseek-v4-flash 表估算（matched=false，客户端标注「估算」）。费率按每步事件时刻逐笔判定，跨步不比价。
+ * 模型匹配：provider 限定条目优先于通配条目，各自内部精确→后缀，大小写不敏感；未命中任何条目按内置 flash 表估算（matched=false，客户端标注「估算」）。费率按每步事件时刻逐笔判定，跨步不比价。
+ *
+ * 历史曲线分桶：模型键 = 归并后的「路由/模型/峰谷」——deepseek-flash 官方统一命名与官方双路由（api-key/账号）的旧落盘记录在读取侧归并进规范桶，旧数据免迁移继续参与平均；价目匹配不受归并影响。
  */
 
 import { readFileSync } from 'node:fs'
@@ -80,6 +82,8 @@ interface RateEntry {
   valley?: RateRow
   /** 峰时段：星期几（0=周日）→ 升序 [startMin, endMin) 列表，编译时已校验不重叠 */
   peakMinutes?: Map<number, Array<[number, number]>>
+  /** true = 峰谷判定扣除中国法定节假日（假日全天谷）；编译时恒有值（未配置 = false） */
+  holidays: boolean
   cacheSaving: string | number | null
 }
 
@@ -125,19 +129,24 @@ const entrySchema = z.object({
   peak: z.object({ ...pricesShape, when: whenGroupSchema.array().min(1) }).optional(),
   valley: z.object(pricesShape).optional(),
   const: z.object(pricesShape).optional(),
+  /** true = 峰谷判定扣除中国法定节假日（假日全天谷，北京日期口径）。 */
+  holidays: z.boolean().optional(),
   cacheSaving: z.union([z.string(), z.number()]).nullish(),
 })
 type RawEntry = z.infer<typeof entrySchema>
 const ratesFileSchema = z.object({ models: z.array(entrySchema) })
 
-/** 内置默认价目表（rates.yml 缺失/损坏时的兜底）：DeepSeek 官方峰谷刊例（2026-09-25 按
- * api-docs.deepseek.com/quick_start/pricing 核对；peak=谷×2，周末全天谷）。模型名沿用
- * deepseek-v4-flash——FALLBACK_ENTRY 按它检索，勿改；它只做「未知模型估算」的价，不看名。 */
+/** 内置默认价目表（rates.yml 缺失/损坏时的兜底）：DeepSeek 官方峰谷刊例（2026-10-07 按
+ * api-docs.deepseek.com/quick_start/pricing 核对；peak=谷×2，周末与法定节假日全天谷）。
+ * 条目不带 provider（官方 api-key / 账号两条路由同价通用）；主力名 deepseek-flash（官方
+ * 脚注 (1) 的统一模型名，版本 DeepSeek-V4.1-Flash），旧名条目随行保留兜住老路由。
+ * FALLBACK_ENTRY 按名 deepseek-v4-flash 检索，勿改名——它只做「未知模型估算」的价，不看名。 */
 const RATE_DEFAULTS_RAW = {
   models: [
     {
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-flash',
       timezone: 'Asia/Shanghai',
+      holidays: true,
       peak: {
         hit: 0.04,
         miss: 2,
@@ -148,8 +157,22 @@ const RATE_DEFAULTS_RAW = {
       cacheSaving: null,
     },
     {
-      model: 'deepseek-v4-flash-vision-exp',
+      model: 'deepseek-v4.1-flash',
       timezone: 'Asia/Shanghai',
+      holidays: true,
+      peak: {
+        hit: 0.04,
+        miss: 2,
+        output: 8,
+        when: [{ days: ['mon', 'tue', 'wed', 'thu', 'fri'], ranges: ['09:00-12:00', '14:00-18:00'] }],
+      },
+      valley: { hit: 0.02, miss: 1, output: 4 },
+      cacheSaving: null,
+    },
+    {
+      model: 'deepseek-v4-flash',
+      timezone: 'Asia/Shanghai',
+      holidays: true,
       peak: {
         hit: 0.04,
         miss: 2,
@@ -162,6 +185,7 @@ const RATE_DEFAULTS_RAW = {
     {
       model: 'deepseek-v4-pro',
       timezone: 'Asia/Shanghai',
+      holidays: true,
       peak: {
         hit: 0.3,
         miss: 9,
@@ -209,6 +233,7 @@ function compileEntry(raw: RawEntry, label: string): { ok: true; entry: RateEntr
       provider: raw.provider ? raw.provider.toLowerCase() : null,
       timezone,
       clock,
+      holidays: raw.holidays === true,
       cacheSaving: raw.cacheSaving ?? null,
     }
     if (raw.const) {
@@ -322,7 +347,78 @@ function localClock(clock: Intl.DateTimeFormat, timeMs: number): { day: number; 
   return { day, minutes: hour * 60 + minute }
 }
 
+// ── 中国法定节假日（峰谷判定扣除假日，假日全天谷）───────────────────────────
+// 数据源：NateScarlet/holiday-cn（跟进国务院公告的开源仓，按年一个 JSON，免费无 key）。
+// jsdelivr（境内可达）与 raw.githubusercontent 双源尝试，任一成功即止；进程内缓存，
+// 失败冷却后随下一个事件静默重试。全程不阻塞同步计费路径——取不到数据时按旧的纯星期
+// 口径判定（宁可退回旧偏差，不让账单哑火）。isOffDay=false 的调休补班日不算假
+// （官方脚注口径：周末即使补班仍是「周末」，全天谷）。
+
+const HOLIDAY_SOURCES = (year: number): string[] => [
+  `https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/${year}.json`,
+  `https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/${year}.json`,
+]
+/** 年 → 休假日集合（北京日期 YYYY-MM-DD）。 */
+const holidayCache = new Map<number, Set<string>>()
+const holidayPending = new Set<number>()
+let holidayLastFailAt = 0
+/** 失败冷却：拉取失败后至少隔这么久再试，绝不逐事件重试打爆网络。 */
+const HOLIDAY_RETRY_MS = 30 * 60 * 1000
+const HOLIDAY_TIMEOUT_MS = 8000
+
+/** 事件时刻 → 北京日期（en-CA 恰好输出 YYYY-MM-DD）。节假日历是北京日期概念，与条目时区无关。 */
+const beijingDate = (timeMs: number): string =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(timeMs))
+
+/** 拉取一年的节假日数据（fire-and-forget，同一年并发去重，失败进冷却）。 */
+function fetchHolidayYear(year: number): void {
+  if (holidayCache.has(year) || holidayPending.has(year)) return
+  if (Date.now() - holidayLastFailAt < HOLIDAY_RETRY_MS) return
+  holidayPending.add(year)
+  void (async () => {
+    try {
+      for (const url of HOLIDAY_SOURCES(year)) {
+        try {
+          const res = await fetch(url, { signal: AbortSignal.timeout(HOLIDAY_TIMEOUT_MS) })
+          if (!res.ok) continue
+          const data = (await res.json()) as { days?: Array<{ date?: string; isOffDay?: boolean }> }
+          const days = Array.isArray(data?.days) ? data.days : []
+          const set = new Set<string>()
+          for (const d of days) {
+            if (typeof d?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.date) && d.isOffDay === true) {
+              set.add(d.date)
+            }
+          }
+          if (set.size === 0) continue // 空数据当源异常，换下一源
+          holidayCache.set(year, set)
+          console.log(`[meow-cachebilling] ${year} 年法定节假日数据已加载：休假日 ${set.size} 天（holiday-cn）`)
+          return
+        } catch {
+          /* 单源失败换下一源 */
+        }
+      }
+      holidayLastFailAt = Date.now()
+      console.warn(
+        `[meow-cachebilling] ${year} 年法定节假日数据获取失败，${HOLIDAY_RETRY_MS / 60000} 分钟后随事件重试；期间峰谷按星期口径判定（假日误按峰价的可能性存在）`,
+      )
+    } finally {
+      holidayPending.delete(year)
+    }
+  })()
+}
+
+/** 该时刻是否中国法定节假日（北京日期口径）。数据未就位时触发后台拉取并按 false 判定。 */
+function isCnHoliday(timeMs: number): boolean {
+  const date = beijingDate(timeMs)
+  const year = Number(date.slice(0, 4))
+  const set = holidayCache.get(year)
+  if (set !== undefined) return set.has(date)
+  fetchHolidayYear(year)
+  return false
+}
+
 function inPeak(entry: RateEntry, timeMs: number): boolean {
+  if (entry.holidays && isCnHoliday(timeMs)) return false
   const { day, minutes } = localClock(entry.clock, timeMs)
   const list = entry.peakMinutes?.get(day)
   if (!list) return false
@@ -460,10 +556,34 @@ function baseSessionId(recordId: string): string {
   return recordId.includes('#') ? recordId.slice(0, recordId.lastIndexOf('#')) : recordId
 }
 
-/** 模型键："provider/model/tierWord"，峰谷分开当两个模型（tierWord: peak|valley|const）。 */
+/** 历史桶的模型名/路由名归并表：只影响曲线分桶（平均曲线的归组），不影响价目匹配。
+ * ①deepseek-flash 官方统一命名（旧数据文件里是旧名，issue #4）；②官方 api-key 与账号
+ * 两条路由同价同刊例，分开记只会让曲线各自没数据（issue #5）。其余模型/路由原样保留。 */
+const MODEL_KEY_ALIASES: Record<string, string> = {
+  'deepseek-v4.1-flash': 'deepseek-flash',
+  'deepseek-v4-flash': 'deepseek-flash',
+  'deepseek-v4-flash-vision-exp': 'deepseek-flash',
+  'deepseek-v4-pro-0813': 'deepseek-v4-pro',
+}
+const PROVIDER_KEY_ALIASES: Record<string, string> = {
+  'deepseek-official': 'deepseek',
+  'deepseek-account': 'deepseek',
+}
+const canonKeySegment = (aliases: Record<string, string>, segment: string): string =>
+  aliases[segment.toLowerCase()] ?? segment.toLowerCase()
+
+/** 模型键："provider/model/tierWord"，峰谷分开当两个模型（tierWord: peak|valley|const）。
+ * 落盘前先归并旧名——新数据直接写进规范桶。 */
 function historyKey(provider: string, model: string, tier: Tier | null): string {
   const word = tier === 'peak' ? 'peak' : tier === 'offPeak' ? 'valley' : 'const'
-  return `${provider.toLowerCase()}/${model.toLowerCase()}/${word}`
+  return `${canonKeySegment(PROVIDER_KEY_ALIASES, provider)}/${canonKeySegment(MODEL_KEY_ALIASES, model)}/${word}`
+}
+
+/** 旧落盘 marks 的模型键字符串 → 规范键。平均曲线在读取侧过它——旧记录免迁移，直接归进规范桶。 */
+function normalizeMarkKey(mark: string): string {
+  const parts = mark.split('/')
+  if (parts.length !== 3) return mark
+  return `${canonKeySegment(PROVIDER_KEY_ALIASES, parts[0])}/${canonKeySegment(MODEL_KEY_ALIASES, parts[1])}/${parts[2]}`
 }
 
 /** 单条精确步目：n=会话内第几次 API 调用（估算步也计数，只是不入库），t/s=turn/step，c=该步花费（元），m=模型键，mi=该步缓存未命中金额（元，含写入），hc=该步缓存命中金额（元）。「读代码」2026-09-20 起按 miss+output=c−hc 取数，mi 已无读取方、随行保留兼容旧记录。 */
@@ -569,7 +689,7 @@ function averageCurve(key: string): { avg: number[]; avgHit: number[]; sessions:
     let hit = false
     for (const step of record.steps) {
       const mark = record.marks[String(step.n)]
-      if (mark !== undefined) current = mark
+      if (mark !== undefined) current = normalizeMarkKey(mark)
       if (current !== key) continue
       hit = true
       if (step.n > maxN) maxN = step.n
@@ -1450,7 +1570,28 @@ export function apply(ctx: any, _config: any): void {
     .catch((e: unknown) => {
       console.warn('[meow-cachebilling] 历史域打开失败（曲线块降级，账单不受影响）：', e)
     })
+
+  // ── 法定节假日数据预热：当年 + 次年（跨年夜不空窗）；失败静默，事件触发时按冷却重试 ──
+  const bjYear = Number(beijingDate(Date.now()).slice(0, 4))
+  fetchHolidayYear(bjYear)
+  fetchHolidayYear(bjYear + 1)
 }
 
 /** 诊断口：node -e 里用固定时间戳验证价目表与峰谷判定，不进任何运行时路径。 */
-export const _rates = { rateOf, mergedEntries: (): RateEntry[] => mergedEntries, PREFILL_RAW }
+export const _rates = {
+  rateOf,
+  mergedEntries: (): RateEntry[] => mergedEntries,
+  PREFILL_RAW,
+  /** 节假日测试口：注入年假日数据 / 直查判定，供离线测试固定行为。 */
+  holidays: {
+    inject: (year: number, dates: string[]): void => holidayCache.set(year, new Set(dates)),
+    clear: (): void => {
+      holidayCache.clear()
+      holidayLastFailAt = 0
+    },
+    isCnHoliday,
+    beijingDate,
+  },
+  historyKey,
+  normalizeMarkKey,
+}

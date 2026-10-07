@@ -4,10 +4,41 @@
  * （entryKey，与 host 预填层/设置页 user 层同一命名空间）。
  */
 export const PREFILL_RATES: Record<string, unknown> = {
-  "deepseek-official/deepseek-v4.1-flash": {
+  "*/deepseek-flash": {
+    "model": "deepseek-flash",
+    "timezone": "Asia/Shanghai",
+    "holidays": true,
+    "peak": {
+      "hit": 0.04,
+      "miss": 2,
+      "output": 8,
+      "when": [
+        {
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "ranges": [
+            "09:00-12:00",
+            "14:00-18:00"
+          ]
+        }
+      ]
+    },
+    "valley": {
+      "hit": 0.02,
+      "miss": 1,
+      "output": 4
+    },
+    "cacheSaving": null
+  },
+  "*/deepseek-v4.1-flash": {
     "model": "deepseek-v4.1-flash",
-    "provider": "deepseek-official",
     "timezone": "Asia/Shanghai",
+    "holidays": true,
     "peak": {
       "hit": 0.04,
       "miss": 2,
@@ -35,10 +66,10 @@ export const PREFILL_RATES: Record<string, unknown> = {
     },
     "cacheSaving": null
   },
-  "deepseek-official/deepseek-v4-flash": {
+  "*/deepseek-v4-flash": {
     "model": "deepseek-v4-flash",
-    "provider": "deepseek-official",
     "timezone": "Asia/Shanghai",
+    "holidays": true,
     "peak": {
       "hit": 0.04,
       "miss": 2,
@@ -66,10 +97,10 @@ export const PREFILL_RATES: Record<string, unknown> = {
     },
     "cacheSaving": null
   },
-  "deepseek-official/deepseek-v4-flash-vision-exp": {
+  "*/deepseek-v4-flash-vision-exp": {
     "model": "deepseek-v4-flash-vision-exp",
-    "provider": "deepseek-official",
     "timezone": "Asia/Shanghai",
+    "holidays": true,
     "peak": {
       "hit": 0.04,
       "miss": 2,
@@ -97,10 +128,10 @@ export const PREFILL_RATES: Record<string, unknown> = {
     },
     "cacheSaving": null
   },
-  "deepseek-official/deepseek-v4-pro": {
+  "*/deepseek-v4-pro": {
     "model": "deepseek-v4-pro",
-    "provider": "deepseek-official",
     "timezone": "Asia/Shanghai",
+    "holidays": true,
     "peak": {
       "hit": 0.3,
       "miss": 9,
@@ -128,10 +159,10 @@ export const PREFILL_RATES: Record<string, unknown> = {
     },
     "cacheSaving": null
   },
-  "deepseek-official/deepseek-v4-pro-0813": {
+  "*/deepseek-v4-pro-0813": {
     "model": "deepseek-v4-pro-0813",
-    "provider": "deepseek-official",
     "timezone": "Asia/Shanghai",
+    "holidays": true,
     "peak": {
       "hit": 0.3,
       "miss": 9,

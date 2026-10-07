@@ -9,19 +9,44 @@
 #                     ranges="HH:MM-HH:MM"，start 含、end 不含，支持 24:00，不支持跨天——要跨请拆两条）；
 #                     valley 不写 when，自动取 peak 的补集（含周末全天谷，取决于 peak 覆盖了哪几天）
 #     const           一口价：24 小时同一价
+#   holidays    可选（仅峰谷条目有意义）：true = 扣除中国法定节假日，假日全天按谷价
+#               （北京日期口径，数据自动取自 holiday-cn——国务院公告的跟进仓，取不到时
+#               退回纯星期判定；设置页编辑条目时同样可勾）。DeepSeek 官方规则见
+#               api-docs.deepseek.com/zh-cn/quick_start/pricing 脚注 (2)。
 #   write       可选：缓存写入单价，缺省 = miss（官方 API 不单独报写入价）
 #   cacheSaving 服务器缓存保留时长，实测后回填，现在没有逻辑
 #
 # 改完重启 dsh web 生效。条目非法会被跳过（控制台有警告），文件整体损坏则回退内置默认表——不会弄崩 DSH。
 
 models:
-  # ── DeepSeek（2026-09-25 核对 api-docs.deepseek.com/zh-cn/quick_start/pricing）──
-  # 高峰=北京时间周一至五 9:00-12:00、14:00-18:00，闲时=高峰减半、周末全天谷。
-  # 主力条目：V4.1-Flash（9 月中旬上线，旧 deepseek-v4-flash 名已下线、旧调用
-  # 仍由 Flash 按 Flash 价服务——旧名条目随行保留，账不断）。
-  - model: deepseek-v4.1-flash
-    provider: deepseek-official
+  # ── DeepSeek（2026-10-07 核对 api-docs.deepseek.com/zh-cn/quick_start/pricing）──
+  # 高峰=北京时间周一至五 9:00-12:00、14:00-18:00（不含中国法定节假日），其余含周末
+  # 及法定节假日全天为谷（脚注 (2)，谷=峰的一半）——节假日由 holidays: true 自动扣除。
+  # 官方条目一律不写 provider：官方同价服务 api-key（deepseek-official）与账号
+  # （deepseek-account）两条路由，写死其中一个会让另一条路由的用户拿不到价目。
+  # 主力条目：deepseek-flash（脚注 (1)：模型名请使用 deepseek-flash，版本
+  # DeepSeek-V4.1-Flash；旧名 deepseek-v4-flash / deepseek-v4.1-flash 仍按 Flash 价服务，
+  # 旧名条目随行保留，账不断——历史曲线里旧名会自动并进 deepseek-flash 桶）。
+  - model: deepseek-flash
     timezone: Asia/Shanghai
+    holidays: true
+    peak:
+      hit: 0.04
+      miss: 2
+      output: 8
+      when:
+        - days: [mon, tue, wed, thu, fri]
+          ranges: ["09:00-12:00", "14:00-18:00"]
+    valley:
+      hit: 0.02
+      miss: 1
+      output: 4
+    cacheSaving: null
+
+  # ── 旧名兼容：官方旧模型名仍在服（按 Flash 价计），老数据/老路由照常命中 ──
+  - model: deepseek-v4.1-flash
+    timezone: Asia/Shanghai
+    holidays: true
     peak:
       hit: 0.04
       miss: 2
@@ -36,8 +61,8 @@ models:
     cacheSaving: null
 
   - model: deepseek-v4-flash
-    provider: deepseek-official
     timezone: Asia/Shanghai
+    holidays: true
     peak:
       hit: 0.04
       miss: 2
@@ -53,8 +78,8 @@ models:
 
   # 旧视觉变体：V4.1-Flash 原生带视觉后疑似退役；条目闲置无害，留作老路由兜底
   - model: deepseek-v4-flash-vision-exp
-    provider: deepseek-official
     timezone: Asia/Shanghai
+    holidays: true
     peak:
       hit: 0.04
       miss: 2
@@ -69,8 +94,8 @@ models:
     cacheSaving: null
 
   - model: deepseek-v4-pro
-    provider: deepseek-official
     timezone: Asia/Shanghai
+    holidays: true
     peak:
       hit: 0.3
       miss: 9
@@ -86,8 +111,8 @@ models:
 
   # pro 的 0813 版本号别名：API 若回报全名（deepseek-v4-pro-0813），精确匹配用它
   - model: deepseek-v4-pro-0813
-    provider: deepseek-official
     timezone: Asia/Shanghai
+    holidays: true
     peak:
       hit: 0.3
       miss: 9

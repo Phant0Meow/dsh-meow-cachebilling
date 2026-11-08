@@ -257,8 +257,18 @@ const emptyDraft = (): Draft => ({
   cacheSaving: '',
 })
 
+/** IANA 时区名有效性：让 Intl 替我们裁决（与运行时 compileEntry 同一裁决者，把失败从「静默跳过」提前到「保存时拦下」）。 */
+export function isIanaZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz })
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** 保存前校验：返回错误文案或 null。价格必须是非负数字；峰谷必须配齐时间与时区（一口价不需要时区）。 */
-function validateDraft(d: Draft): string | null {
+export function validateDraft(d: Draft): string | null {
   if (!d.model.trim()) return '模型不能为空'
   const numOk = (v: string): boolean => v.trim() !== '' && Number.isFinite(toNum(v)) && toNum(v) >= 0
   const partOk = (hit: string, miss: string, output: string): string | null => {
@@ -268,6 +278,9 @@ function validateDraft(d: Draft): string | null {
   if (d.isPeak) {
     // 与 tzFor 用同一张表：输入框隐藏（预设 provider）= 时区由表带出，不再要求手填
     if (!d.timezone.trim() && autoTzOf(d.provider) === null) return '时区不能为空（内置供应商会自动带出，其余填 IANA 名）'
+    // 手填值优先于内置表（buildEntry 同款取值序），所以只要非空就验格式——切到内置 provider 后残留的坏值也拦得住
+    const manualTz = d.timezone.trim()
+    if (manualTz && !isIanaZone(manualTz)) return '时区须为 IANA 名称，如 Asia/Shanghai（不支持 UTC+8 / GMT+8 / 中文写法）'
     try {
       parseWhenText(d.whenText)
     } catch (e) {
@@ -555,8 +568,10 @@ function BillingCard(props: { scope: any; scan?: () => Promise<CatalogModel[]> }
                           className: 'meowcb_set_input meowcb_set_input_save' + (draft.timezone.trim() ? '' : ' meowcb_set_input_err'),
                           value: draft.timezone,
                           onChange: (e: any) => set({ timezone: e.target.value }),
-                          placeholder: 'Asia/Shanghai',
+                          placeholder: 'Asia/Shanghai（IANA 名）',
                         }),
+                        // 常驻引导：issue #6 的根因就是 UTC+8 这类偏移写法被静默丢弃，光靠 placeholder 不够醒目
+                        el('span', { className: 'meowcb_set_muted' }, '只认 IANA 名称，UTC+8 这类偏移写法无效'),
                       ),
                 ),
                 el(PriceInputs, { d: draft, set, mode: 'peak' }),

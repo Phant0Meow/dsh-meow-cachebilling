@@ -109,6 +109,8 @@ interface CacheBillingView {
   provider?: string | null
   tier?: string | null
   priceMatched?: boolean
+  /** 设置层无效被跳过的条目（key → 错误文案）；缺省 = 全部有效 */
+  skipped?: Record<string, string>
   sessionMissSteps?: number
   sessionFullMissSteps?: number
   turnHitCost?: number
@@ -192,6 +194,16 @@ function renderBill(bill: HTMLElement): void {
     notice.textContent =
       '［喵缓存账单］当前模型无价格数据，请去设置界面添加。以下为Deepseek价格，仅供参考：'
     put(notice)
+  }
+
+  // issue #6：坏条目此前只在 host console 被跳过，面板无感——host 下发 skipped，这里在估算提示行旁并列提示
+  if (view.skipped && Object.keys(view.skipped).length > 0) {
+    const skippedCount = Object.keys(view.skipped).length
+    const skippedNotice = doc.createElement('div')
+    skippedNotice.className = 'meowcb_notice'
+    skippedNotice.title = Object.entries(view.skipped).map(([k, err]) => `${k}: ${err}`).join('\n')
+    skippedNotice.textContent = `［喵缓存账单］有 ${skippedCount} 条自定义价目无效已回落内置价：${Object.keys(view.skipped).join('、')}（详情见设置页）`
+    put(skippedNotice)
   }
 
   // 账表节标题：色块 + 大字（猫猫 08-31 层级定稿：标题大字、子项小字）

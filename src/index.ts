@@ -308,12 +308,17 @@ const COMPILED_PREFILL: Map<string, RateEntry> = compileMap(PREFILL_RAW, '预填
 /** 合成层：base(预填) ⊕ user(settings) 在 field 级覆盖；rateOf 只查这张。 */
 let mergedEntries: RateEntry[] = Array.from(COMPILED_PREFILL.values())
 
+/** 设置层被跳过的条目（key → 错误文案），recompileMerged 每次重建；经 projection 下发，面板提示「配置无效已回落」。 */
+let skippedSettings: Record<string, string> = {}
+
 /** 从合成值重编译。单条坏条目回落预填值，绝不因手编 settings.yaml 让账单哑火。 */
 function recompileMerged(composed: unknown): void {
   const raw = composed as Record<string, RawEntry> | null | undefined
   const keys = raw ? Object.keys(raw) : []
+  const skipped: Record<string, string> = {}
   if (keys.length === 0) {
     mergedEntries = Array.from(COMPILED_PREFILL.values())
+    skippedSettings = skipped
     return
   }
   const map = new Map<string, RateEntry>()
@@ -322,6 +327,7 @@ function recompileMerged(composed: unknown): void {
     if (r.ok) {
       map.set(key, r.entry)
     } else {
+      skipped[key] = r.error
       const fallback = COMPILED_PREFILL.get(key)
       if (fallback) {
         map.set(key, fallback)
@@ -331,6 +337,7 @@ function recompileMerged(composed: unknown): void {
       }
     }
   }
+  skippedSettings = skipped
   if (map.size > 0) mergedEntries = Array.from(map.values())
 }
 
@@ -1306,6 +1313,8 @@ export function apply(ctx: any, _config: any): void {
           unitPricePerM: z.number().nullable(),
           /** 模型是否命中价目表；false 时金额为 flash 价估算，客户端标注「估算」 */
           priceMatched: z.boolean(),
+          /** 设置层无效被跳过的条目（key → 错误文案）；缺省 = 全部有效（issue #6：坏配置此前只在 console 提示，面板无感）。 */
+          skipped: z.record(z.string()).optional(),
           turn: z.number().int().nullable(),
           step: z.number().int().nullable(),
           /** 当前轮金额总额，命中加未命中加输出 */
@@ -1404,6 +1413,7 @@ export function apply(ctx: any, _config: any): void {
               sessionFullMissSteps: sessionTotals.fullMissSteps,
               curve: null,
               compare: null,
+              ...(Object.keys(skippedSettings).length > 0 ? { skipped: skippedSettings } : {}),
             }
           }
           const totalInput = s.inputTokens + s.cacheReadTokens + s.cacheWriteTokens
@@ -1467,6 +1477,7 @@ export function apply(ctx: any, _config: any): void {
               cache: cost,
               fullMiss,
             },
+            ...(Object.keys(skippedSettings).length > 0 ? { skipped: skippedSettings } : {}),
           }
         },
       },
